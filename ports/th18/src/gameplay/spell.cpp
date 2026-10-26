@@ -58,9 +58,12 @@ AnmVm* create_vm(AnmResource* resource, int script) {
 }
 
 void game_origin(AnmVm* vm) {
+    // UI roots now receive their layer-selected origin in the ANM renderer.
+    if ((vm->flags3 & 0x300000u) == 0x200000u) return;
     // The port draws gameplay ANMs in its full-window 1280x960 projection.
     // Convert the native gameplay origin to the script's 640/1280 coordinate mode.
-    const float factor = ((vm->flags3 >> 22) & 7) == 2 ? 2.0f : 1.0f;
+    const uint32_t mode = (vm->flags3 >> 22) & 7;
+    const float factor = (mode == 2 || mode == 4) ? 2.0f : 1.0f;
     vm->extra_x = 224.0f * factor;
     vm->extra_y = 16.0f * factor;
 }

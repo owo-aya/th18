@@ -1594,7 +1594,9 @@ static int32_t enemy_exec(void* host) {
     case 554: {
         if(session().mode!=GameMode::SpellPractice && session().mode!=GameMode::Replay) {
             auto* resource=static_cast<AnmResource*>(g_stage->logo_anm);
-            auto* vm=anm_vm_alloc(resource);anm_vm_set_script(vm,resource,0);anm_queue_add(vm);
+            // 441ed0 -> 405bf0: ordinary queued VM; the script selects its origin.
+            auto* vm=anm_vm_alloc(resource);vm->flags3|=0x1000u;
+            anm_vm_set_script(vm,resource,0);anm_queue_add(vm);
             g_cancel_effects.push_back(vm);anm_manage_vm(vm,&g_cancel_effects.back());
         }
         break;

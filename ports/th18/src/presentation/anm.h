@@ -149,7 +149,7 @@ struct AnmVm {
     uint8_t  pad_52c[0x08];      // +0x52c
     uint32_t flags2;             // +0x534 bit0/bit1 为绘制开关；bit26..30 = AnmVmRenderType
     uint32_t flags3;             // +0x538 bit 0x180 隐藏；0x40000 忽略父变换；
-                                 // 0x1c00000 混合模式（0x400000/0x800000 有额外缩放）；
+                                 // 0x300000 坐标原点；0x1c00000 坐标缩放模式；
                                  // bit 4..6 = 旋转顺序
     // +0x53c 原版是第二颜色插值的中间状态；本层把两个可见标志的判定结果存这里。
     float    near_alpha_start;  // +0x53c op439近距透明阈值

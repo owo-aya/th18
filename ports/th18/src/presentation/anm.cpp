@@ -744,16 +744,24 @@ void anm_draw_vm(AnmVm* vm)
     world._41 *= position_scale;
     world._42 *= position_scale;
     world._43 *= position_scale;
-    for (const AnmVm* parent = static_cast<const AnmVm*>(vm->parent);
-         parent != nullptr && (vm->flags3 & 0x40000u) == 0;
-         parent = static_cast<const AnmVm*>(parent->parent))
+    const AnmVm* position_root = vm;
+    while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0)
     {
+        const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
         const uint32_t mode = (parent->flags3 >> 22) & 7;
         const float factor = (mode == 2 || mode == 4) ? 1.0f : 2.0f;
         const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
         world._41 += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
         world._42 += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
         if (render_type == 8) world._43 += (parent->pos_z + parent->extra_z + parent_offset[2]) * factor;
+        position_root = parent;
+    }
+    if (!background_3d && (position_root->flags3 & 0x300000u) == 0x200000u) {
+        // 4063d0: UI layers 20..23 add the origin once, at the root.
+        // Fold the original camera's gameplay viewport into our 1280 scene.
+        // Gameplay VMs (0x100000) already carry their scene origin in extra_x/y.
+        world._41 += 448.0f;
+        world._42 += 32.0f;
     }
     // sub_47e8f0：父VM的比例同样参与子精灵大小（abcard0 的 .75 外壳）。
     if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
@@ -989,14 +997,19 @@ void anm_vm_corners(const AnmVm* vm, float corners[4][2])
         yy = cz * vm->scale_y;
     }
 
-    for (const AnmVm* parent = static_cast<const AnmVm*>(vm->parent);
-         parent != nullptr && (vm->flags3 & 0x40000u) == 0;
-         parent = static_cast<const AnmVm*>(parent->parent)) {
+    const AnmVm* position_root = vm;
+    while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0) {
+        const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
         const uint32_t mode = (parent->flags3 >> 22) & 7;
         const float factor = (mode == 2 || mode == 4) ? 0.5f : 1.0f;
         const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
         center_x += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
         center_y += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
+        position_root = parent;
+    }
+    if ((position_root->flags3 & 0x300000u) == 0x200000u) {
+        center_x += 224.0f;
+        center_y += 16.0f;
     }
 
     if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
@@ -2043,10 +2056,17 @@ void anm_execute_script(AnmVm* vm)
             break;
         }
 
-        case 304: // 绘制层号（sub_4066b0）
-            vm->draw_layer = static_cast<int32_t>(*reinterpret_cast<const uint32_t*>(payload));
+        case 304: { // 4066b0: layer, coordinate origin, then default coordinate scale.
+            const int32_t layer = *reinterpret_cast<const int32_t*>(payload);
+            vm->draw_layer = layer;
+            vm->flags3 &= ~0x300000u;
+            if (layer >= 3 && layer <= 19) vm->flags3 |= 0x100000u;
+            else if (layer >= 20 && layer <= 23) vm->flags3 |= 0x200000u;
+            if ((layer >= 20 && layer <= 32) || (layer >= 37 && layer <= 45))
+                vm->flags3 = (vm->flags3 & ~0x1c00000u) | 0x400000u;
             vm->script_cursor += length;
             break;
+        }
 
         case 305: // 原版深度写入开关（不控制雾）。
             vm->flags2 = (vm->flags2 & ~0x2000u) | ((payload[0] & 1u) << 13);
