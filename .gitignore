@@ -1,0 +1,26 @@
+# Original game, extracted assets, and local experiments.
+/[[]th18]*/
+/origtest/
+
+# Build products and Python caches.
+build/
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+__pycache__/
+*.pyc
+
+# Installed tools and generated research output stay local.
+# Keep the documented analysis entry and the TH18 comparison tool sources.
+/toolchains/*
+!/toolchains/re/
+/toolchains/re/*
+!/toolchains/re/analyze_basics.py
+!/toolchains/re/compare18.cpp
+!/toolchains/re/compare18-build.cmd
+!/toolchains/re/compare_fields.h
+!/toolchains/re/th18_layout.h
