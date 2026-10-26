@@ -87,7 +87,25 @@ static ThreadStatus bullets_render_task(void*) {
     gfx_select_camera(3);
     for(int bucket=0;bucket<6;++bucket)
         for(auto& bullet:g_enemy_bullets)
-            if(bullet.render_bucket==bucket)anm_draw_vm(bullet.vm);
+            if(bullet.render_bucket==bucket) {
+                // 424ef0..424f68: apply auto-facing after the ANM tick, at draw time.
+                // The sprite's zero-angle axis is perpendicular to the motion axis.
+                if(bullet.vm->flags3&0x200) {
+                    float angle=bullet.angle+1.5707963705062866f;
+                    int wraps=0;
+                    while(angle>3.1415927410125732f) {
+                        angle-=6.2831854820251465f;
+                        if(wraps++>0x20)break; // Same shared wrap limit as the original.
+                    }
+                    while(angle< -3.1415927410125732f) {
+                        angle+=6.2831854820251465f;
+                        if(wraps++>0x20)break;
+                    }
+                    bullet.vm->flags2|=4;
+                    bullet.vm->rot_z=angle;
+                }
+                anm_draw_vm(bullet.vm);
+            }
     return THREAD_CONTINUE;
 }
 static void bullet_fire(Enemy& self,int slot);
@@ -1108,7 +1126,6 @@ static void bullets_update() {
             b.x+=b.vx*g_speed_scale*(b.appearing?0.5f:1.0f);b.y+=b.vy*g_speed_scale*(b.appearing?0.5f:1.0f);
         }
         b.vm->extra_x=b.x+224;b.vm->extra_y=b.y+16;
-        if(b.vm->flags3&0x200){b.vm->flags2|=4;b.vm->rot_z=b.angle;}
         anm_vm_update(b.vm);
         const bool ended=b.vm->script_cursor<0 && (b.vm->flags2&1)==0;
         const bool visible=anm_vm_get_var(b.vm,10000)!=0;
