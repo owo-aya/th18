@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-// thbgm.fmt / thbgm.dat 曲目表（原版从 "../../bgm/" 目录读，不在 th18.dat 里）。
+// thbgm.fmt / thbgm.dat 曲目表（发行资源的 fmt 在 th18.dat 内，音频另存 thbgm.dat）。
 // 结构来自 thtk/extlib/thtypes/bgm_types.h，原版读取点 sub_452cb0；
 // thbgm.dat 打开 sub_48aba0，流式缓冲创建 sub_4895a0 / sub_4898f0。
 //
@@ -11,6 +11,9 @@
 // preload_size 是预加载字节数（TH18 全部等于 track_size，即整曲预载）。
 // 相邻曲目的 track_offset 差值正好等于前一条的 track_size。
 
+// The file embeds the 18-byte WAVEFORMATEX layout. Default C++ alignment
+// rounds this block to 20 bytes and the whole record to 56 instead of 52.
+#pragma pack(push, 1)
 struct BgmWaveFormat {
     uint16_t format_tag;      // 1 = WAVE_FORMAT_PCM
     uint16_t channels;        // 2
@@ -30,6 +33,7 @@ struct BgmFmtEntry {
     BgmWaveFormat wave_format; // +0x20 18 字节
     uint16_t padding;        // +0x32
 };
+#pragma pack(pop)
 
 // 原版 BGM 流程（全部是 CSound 的方法/全局函数）：
 //   sub_452cb0  bgm_init：anm_get(0, "text.anm") 存 DAT_004cd61c；
