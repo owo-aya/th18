@@ -1036,8 +1036,11 @@ void anm_draw_vm(AnmVm* vm)
         dev->GetTransform(D3DTS_VIEW, &previous_view);
         dev->GetTransform(D3DTS_PROJECTION, &previous_projection);
         const int camera = gfx_current_camera();
+        // 454b20 centers camera 3 on the offscreen playfield at X=320.
+        // transform_scene_position already maps that origin to Scene X=224;
+        // its viewport and perspective eye must undergo the same -96 shift.
         const D3DVIEWPORT9 viewport = camera == 2 ? D3DVIEWPORT9{0,0,640,480,0,1}
-            : camera == 3 ? D3DVIEWPORT9{116,4,408,472,0,1}
+            : camera == 3 ? D3DVIEWPORT9{20,4,408,472,0,1}
                           : D3DVIEWPORT9{32,16,384,448,0,1};
         const float cotangent = 1.0f / std::tan(0.5235987901687622f * 0.5f);
         D3DMATRIX view{};

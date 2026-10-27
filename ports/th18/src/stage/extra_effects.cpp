@@ -53,13 +53,40 @@ void texture_state(IDirect3DDevice9* device) {
 
 ThreadStatus draw_auras(void*) {
     if(auras.empty())return THREAD_CONTINUE;
+    auto* device=gfx_device();gfx_select_camera(3);
+    device->SetRenderState(D3DRS_LIGHTING,FALSE);
+    device->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
+    device->SetRenderState(D3DRS_ZENABLE,FALSE);
+    device->SetRenderState(D3DRS_FOGENABLE,FALSE);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);
+    device->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE);
+    device->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
+    device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ZERO);
+    device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ONE);
+    device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,TRUE);
+    device->SetRenderState(D3DRS_SRCBLENDALPHA,D3DBLEND_ONE);
+    device->SetRenderState(D3DRS_DESTBLENDALPHA,D3DBLEND_ZERO);
+    device->SetRenderState(D3DRS_BLENDOPALPHA,D3DBLENDOP_ADD);
+    device->SetTexture(0,nullptr);
+    device->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG2);
+    device->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE);
+    device->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG2);
+    device->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE);
+    device->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);
+    // 455610 (B0x0e): preserve scene RGB and replace its alpha with 255
+    // before sampling @R. Background sprites leave their own alpha in it;
+    // using that alpha again would suppress the distortion's circle mask.
+    const AuraVertex opaque_alpha[4]={
+        {32,16,0,1,0xff000000,0,0},{416,16,0,1,0xff000000,0,0},
+        {32,464,0,1,0xff000000,0,0},{416,464,0,1,0xff000000,0,0}
+    };
+    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,opaque_alpha,sizeof(AuraVertex));
     // 455530 renders layer35 at B0x0f, after the background has been drawn.
     IDirect3DSurface9* surface;
     aura_texture->GetSurfaceLevel(0,&surface);
     // 455d80 uses text66's @R texture. The pause-copy rectangle excludes
     // its right/bottom texels, but 42f890 can sample those edge texels.
     gfx_copy_scene_surface(surface);surface->Release();
-    auto* device=gfx_device();gfx_select_camera(3);
     texture_state(device);device->SetTexture(0,aura_texture);
     device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);
     device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
