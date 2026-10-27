@@ -141,7 +141,9 @@ struct Enemy {
     uint8_t pad6330[0x6358 - 0x6330];
     float alpha;   // +0x6358 Bomb 伤害倍率，构造 = 1.0f
     uint32_t flag; // +0x635c 敌机标志字（0x20/0x20000/0x80000/0x4000000/0x40000000 等）
-    uint8_t pad6360[0x67b4 - 0x6360];
+    uint8_t pad6360[0x636c - 0x6360];
+    int32_t boss_index; // +0x636c 由 ECL512 设置，flag 的 0x800000 位表示已登记
+    uint8_t pad6370[0x67b4 - 0x6370];
     Enemy* self;  // +0x67b4 构造写 this，ECL VM 由此回指敌人
     uint8_t pad67b8[0x6824 - 0x67b8];
     int32_t field6824;  // +0x6824 构造取 DAT_004ccce4
@@ -157,7 +159,6 @@ struct Enemy {
     int32_t phase_time;
     float phase_fraction;
     int32_t damage_wait;
-    int32_t boss_index=-1;
     const char* pending_sub;
     int32_t special_callback;
 };
@@ -179,11 +180,12 @@ struct EnemyManager {
     int32_t field30;
     int32_t field34;
     int32_t field38;
-    int32_t field3c;  // +0x3c GetVarInt -9957
-    int32_t field40;  // +0x40 GetVarInt -9956
-    int32_t field44;  // +0x44 GetVarInt -9955
+    int32_t field3c;  // +0x3c ECL -9949：脚本重置后累计的 miss 数
+    int32_t field40;  // +0x40 ECL -9948：脚本重置后累计的 Bomb/相应能力使用数
+    int32_t field44;  // +0x44 ECL -9947：脚本置 1，miss/Bomb 将其清零
     int32_t boss_id[3]; // +0x48 / +0x4c / +0x50
-    uint8_t pad054[0x8c-0x54];
+    uint8_t pad054[0x88-0x54];
+    uint32_t flags88; // +0x88 ECL512 清位 0（0042d4d0）
     int32_t max_enemies;  // +0x8c 同时存在的敌机上限（构造 99999）
     int32_t next_id;      // +0x90 下一个敌机 ID（跳过 0）
     int32_t last_id;      // +0x94

@@ -1178,7 +1178,7 @@ void delete_enemy(Enemy* enemy) {
     if (manager->enemy_tail == node) manager->enemy_tail = node->prev;
     if((*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(enemy)+0x6360)&4)==0) {
         --manager->count;
-        if(enemy->boss_index>=0)manager->boss_id[enemy->boss_index]=0;
+        if(enemy->flag&0x800000u)manager->boss_id[enemy->boss_index]=0;
     }
 
     for (AnmVm* vm : enemy->visual) if(vm) {
@@ -1225,7 +1225,9 @@ static int32_t enemy_var_int(void* host, int32_t id) {
         case -9898: return int32_t(g_enemy_bullets.size());
         case -9957: return 1;
         case -9953:case -9952:case -9951:case -9950:return g_difficulty==id+9953;
-        case -9949:case -9948:case -9947:return g_enemy_manager->boss_id[id+9949];
+        case -9949:return g_enemy_manager->field3c;
+        case -9948:return g_enemy_manager->field40;
+        case -9947:return g_enemy_manager->field44;
         case -9946:return g_enemy_manager->count;
         case -9945:return g_player_character+g_player_shot_type;
         default:
@@ -1281,7 +1283,9 @@ static int32_t* enemy_var_ptr(void* host, int32_t id) {
         case -9980: return &e.var[5];
         case -9979: return &e.var[6];
         case -9978: return &e.var[7];
-        case -9949:case -9948:case -9947:return &g_enemy_manager->boss_id[id+9949];
+        case -9949:return &g_enemy_manager->field3c;
+        case -9948:return &g_enemy_manager->field40;
+        case -9947:return &g_enemy_manager->field44;
         default:
             if(id>=-9926 && id<=-9923)return reinterpret_cast<int32_t*>(g_enemy_manager)+3+id+9926;
             if(id>=-9943 && id<=-9940){Enemy* boss=find_enemy(g_enemy_manager->boss_id[0]);return &(boss?boss:&e)->var[id+9943];}
@@ -1308,7 +1312,13 @@ static float* enemy_var_float_ptr(void* host, int32_t id) {
 static int32_t enemy_exec(void* host) {
     auto& e=*static_cast<Enemy*>(host);const ecl::InsHeader* ins=thread_current(g_active_thread?g_active_thread:e.thread);
     const int op=ins->id;
-    if(ins_group(op)==0 || ins_group(op)==6) {op_create_enemy(e);return 0;}
+    if(ins_group(op)==6) {
+        // 430d30 case 6: 309..312 consume the spawn without creating an
+        // enemy while boss slot 0 resolves; the stage script keeps its time.
+        if(!find_enemy(g_enemy_manager->boss_id[0]))op_create_enemy(e);
+        return 0;
+    }
+    if(ins_group(op)==0) {op_create_enemy(e);return 0;}
     switch(op) {
     case 302:e.anm_index=arg_int(e,0);break;
     case 303: {
@@ -1521,9 +1531,13 @@ static int32_t enemy_exec(void* host) {
     case 513:e.phase_time=0;e.phase_fraction=0;break;
     case 512: {
         const int slot=arg_int(e,0);
-        if(e.boss_index>=0)g_enemy_manager->boss_id[e.boss_index]=0;
-        e.boss_index=slot;
-        if(slot<0)e.flag&=~0x800000u;else{e.flag|=0x800000u;g_enemy_manager->boss_id[slot]=e.id;}
+        g_enemy_manager->flags88&=~1u;
+        if(slot<0) {
+            if(e.flag&0x800000u)g_enemy_manager->boss_id[e.boss_index]=0;
+            e.flag&=~0x800000u;
+        } else {
+            e.flag|=0x800000u;g_enemy_manager->boss_id[slot]=e.id;e.boss_index=slot;
+        }
         break;
     }
     case 514: {
