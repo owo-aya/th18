@@ -87,8 +87,8 @@ CardOption* create_option(AbilityCard* card, int y, int script) {
     option->vm->draw_layer = 14;
     option->vm->flags3 = (option->vm->flags3 & ~0x200000u) | 0x101000u;
     anm_vm_update(option->vm);
-    option->vm->extra_x = 224.0f;
-    option->vm->extra_y = -984.0f;
+    option->vm->extra_x = 0.0f;
+    option->vm->extra_y = -1000.0f;
     option->vm->extra_z = 0.0f;
     card->unk_1c = static_cast<int32_t>(anm_queue_add(option->vm));
     anm_manage_vm(option->vm, &option->vm);
@@ -225,8 +225,8 @@ void move_option(CardOption* option, CardId id) {
         }
     }
     if (option->vm != nullptr) {
-        option->vm->extra_x = option->x / 128.0f + 224.0f;
-        option->vm->extra_y = option->y / 128.0f + 16.0f;
+        option->vm->extra_x = option->x / 128.0f;
+        option->vm->extra_y = option->y / 128.0f;
         option->vm->extra_z = 0.0f;
     }
 }

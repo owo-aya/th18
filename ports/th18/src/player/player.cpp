@@ -126,7 +126,7 @@ void player_options_rebuild(Player* p) {
                 AnmVm* vm=anm_vm_alloc(player_anm(p));
                 anm_vm_bind_script(vm,player_anm(p),script);
                 vm->draw_layer=14;vm->flags3=(vm->flags3&~0x200000u)|0x101000u;
-                anm_vm_update(vm);vm->extra_x=224;vm->extra_y=-984;
+                anm_vm_update(vm);vm->extra_x=0;vm->extra_y=-1000;
                 anm_queue_add(vm);return vm;
             };
             g_option_vm[i]=create(option_script[g_player_character]);
@@ -162,8 +162,8 @@ void player_options_update(Player* p) {
             put_i32(p,q+0x60,dx==0&&dy==0?y:get_i32(p,q+0x60)+dy);
         }
         for(AnmVm* vm:{g_option_vm[i],g_option_max_vm[i]})if(vm) {
-            vm->extra_x=get_i32(p,q+0x5c)/128.0f+224;
-            vm->extra_y=get_i32(p,q+0x60)/128.0f+16;
+            vm->extra_x=get_i32(p,q+0x5c)/128.0f;
+            vm->extra_y=get_i32(p,q+0x60)/128.0f;
         }
     }
 }
@@ -729,8 +729,8 @@ int32_t player_laser_hit(AttackObject& a, PlayerBullet& b, const float* pos,
         auto* resource = static_cast<AnmResource*>(a.anm_manager);
         AnmVm* spark = anm_vm_alloc(resource);
         anm_vm_set_script(spark, resource, script);
-        spark->extra_x = a.motion.x+c*a.half_width+224.0f;
-        spark->extra_y = a.motion.y+s*a.half_width+16.0f;
+        spark->extra_x = a.motion.x+c*a.half_width;
+        spark->extra_y = a.motion.y+s*a.half_width;
         spark->extra_z = 0;
         spark->rot_z = a.motion.angle;
         spark->flags2 |= 4u;
@@ -1080,8 +1080,8 @@ int32_t player_attack_spawn(Player* p, const ShtInstruction* instr, int32_t comm
     AnmResource* res = resource ? resource : player_anm(p);
     AnmVm* vm = anm_vm_alloc(res);
     anm_vm_set_script(vm, res, instr->anm_script);
-    vm->extra_x = a->motion.x + 224.0f;
-    vm->extra_y = a->motion.y + 16.0f;
+    vm->extra_x = a->motion.x;
+    vm->extra_y = a->motion.y;
     vm->extra_z = a->motion.z;
     // 行 265–268：脚本跑过一格后 flags3 的 0x200 置起来时，用指令角度作 VM 旋转。
     if ((vm->flags3 & 0x200u) != 0) {
@@ -1262,8 +1262,8 @@ void player_attack_update(Player* p) {
             continue;
         }
         if (a->anm_vm != nullptr) {
-            a->anm_vm->extra_x = a->motion.x + 224.0f;
-            a->anm_vm->extra_y = a->motion.y + 16.0f;
+            a->anm_vm->extra_x = a->motion.x;
+            a->anm_vm->extra_y = a->motion.y;
             a->anm_vm->extra_z = a->motion.z;
             if(a->anm_vm->flags3&0x200u)a->anm_vm->rot_z=a->motion.angle;
         }
@@ -1619,8 +1619,8 @@ void player_render_update(Player* p) {
         return;
     }
     AnmVm* vm = player_anm_vm(p);
-    vm->extra_x = p->x + 224.0f;
-    vm->extra_y = p->y + 16.0f;
+    vm->extra_x = p->x;
+    vm->extra_y = p->y;
     vm->extra_z = p->z;
     vm->flags3 = (vm->flags3 | 0x100000u) & ~0x200000u;
     anm_draw_vm(vm);

@@ -23,8 +23,8 @@ float* effect_position(AbilityCard* card) {
 }
 
 void move_visual(AnmVm* vm, const float* position) {
-    vm->extra_x = position[0] + 224;
-    vm->extra_y = position[1] + 16;
+    vm->extra_x = position[0];
+    vm->extra_y = position[1];
     vm->extra_z = position[2];
 }
 

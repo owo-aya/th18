@@ -676,7 +676,7 @@ int32_t enemy_update_presentation(Enemy& e) {
         }
     }
     for(AnmVm* vm:e.visual)if(vm) {
-        vm->extra_x=e.x+224;vm->extra_y=e.y+16;
+        vm->extra_x=e.x;vm->extra_y=e.y;
         if(vm->flags3&0x200){auto* motion=reinterpret_cast<Motion*>(&e.x);vm->flags2|=4;vm->rot_z=std::atan2(motion->vel_y,motion->vel_x);}
     }
     if(e.fade_time>0)e.fade_time-=g_speed_scale;
@@ -733,7 +733,7 @@ void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin
             b.appearing=true;b.x-=b.vx*4;b.y-=b.vy*4;
             if(label!=1)anm_set_label(vm,7+label);
         } else anm_set_label(vm,2);
-        bullet_extra_start(b);vm->extra_x=b.x+224;vm->extra_y=b.y+16;anm_vm_update(vm);
+        bullet_extra_start(b);vm->extra_x=b.x;vm->extra_y=b.y;anm_vm_update(vm);
     }
 }
 int bullet_sprite_for_vm(const AnmVm* vm,int logical) {
@@ -786,14 +786,14 @@ void laser_cancel_effect(float x,float y,int kind,int type,int color,bool rectan
     else if(type>=18 && type<(rectangle?31:32))script=257+color*2;
     else if(type>=31 && type<=33)script=281+color*2;
     if(script>=0) {
-        auto* vm=anm_vm_alloc(g_bullet_anm);vm->extra_x=x+224;vm->extra_y=y+16;
+        auto* vm=anm_vm_alloc(g_bullet_anm);vm->extra_x=x;vm->extra_y=y;
         anm_vm_set_script(vm,g_bullet_anm,script);anm_queue_add(vm);g_cancel_effects.push_back(vm);anm_manage_vm(vm,&g_cancel_effects.back());
     }
 }
 void player_graze(float x,float y) {
     auto* graze=reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x30);
     graze[0]=std::min(graze[0]+1,99999999);graze[1]=std::min(graze[1]+1,99999999);
-    auto* vm=anm_vm_alloc(g_effect_anm);vm->extra_x=(x+g_player->x)*0.5f+224;vm->extra_y=(y+g_player->y)*0.5f+16;
+    auto* vm=anm_vm_alloc(g_effect_anm);vm->extra_x=(x+g_player->x)*0.5f;vm->extra_y=(y+g_player->y)*0.5f;
     anm_vm_set_script(vm,g_effect_anm,24);anm_queue_add(vm);g_cancel_effects.push_back(vm);anm_manage_vm(vm,&g_cancel_effects.back());
     sound_play_se_at(42,x);
 }
@@ -892,7 +892,7 @@ static void enemy_defeat(Enemy& e) {
         AnmResource* resource=enemy_anm_resource(e,e.death_resource);
         auto* vm=anm_vm_alloc(resource);anm_vm_bind_script(vm,resource,e.death_script);
         vm->draw_layer=3;vm->flags3=(vm->flags3&~0x200000u)|0x101000u;
-        vm->extra_x=e.x+224;vm->extra_y=e.y+16;vm->extra_z=e.z;
+        vm->extra_x=e.x;vm->extra_y=e.y;vm->extra_z=e.z;
         const float dx=e.x-e.previous_x,dy=e.y-e.previous_y;
         vm->rot_z=dx*dx+dy*dy<0.040000003f?-1.57079637f:std::atan2(dy,dx);
         anm_vm_update(vm);anm_queue_add(vm);g_cancel_effects.push_back(vm);anm_manage_vm(vm,&g_cancel_effects.back());
@@ -1141,7 +1141,7 @@ static void bullets_update() {
         else if(b.cancel_state==0 && (b.effect_flags&0x4000000)==0) {
             b.x+=b.vx*g_speed_scale*(b.appearing?0.5f:1.0f);b.y+=b.vy*g_speed_scale*(b.appearing?0.5f:1.0f);
         }
-        b.vm->extra_x=b.x+224;b.vm->extra_y=b.y+16;
+        b.vm->extra_x=b.x;b.vm->extra_y=b.y;
         anm_vm_update(b.vm);
         const bool ended=b.vm->script_cursor<0 && (b.vm->flags2&1)==0;
         const bool visible=anm_vm_get_var(b.vm,10000)!=0;
@@ -1330,8 +1330,8 @@ static int32_t enemy_exec(void* host) {
         anm_vm_bind_script(vm,resource,arg_int(e,1));
         vm->flags3|=0x1000u;
         if(op!=308) {
-            vm->extra_x=e.x+224+(op==338?arg_float(e,2):0);
-            vm->extra_y=e.y+16+(op==338?arg_float(e,3):0);
+            vm->extra_x=e.x+(op==338?arg_float(e,2):0);
+            vm->extra_y=e.y+(op==338?arg_float(e,3):0);
             vm->extra_z=e.z;
         }
         vm->rot_z=op==338?arg_float(e,4):0.0f;

@@ -58,8 +58,8 @@ AnmVm* create_vm(AnmResource* resource, int script) {
 }
 
 void game_origin(AnmVm* vm) {
-    // UI roots now receive their layer-selected origin in the ANM renderer.
-    if ((vm->flags3 & 0x300000u) == 0x200000u) return;
+    // Layer-selected origins, including gameplay layers 3..19, are applied by ANM.
+    if ((vm->flags3 & 0x300000u) != 0) return;
     // The port draws gameplay ANMs in its full-window 1280x960 projection.
     // Convert the native gameplay origin to the script's 640/1280 coordinate mode.
     const uint32_t mode = (vm->flags3 >> 22) & 7;
@@ -114,8 +114,8 @@ void boss_position(float* position) {
 
 void move_circle() {
     if (g_spell->circle) {
-        g_spell->circle->extra_x = g_spell->position[0] + 224.0f;
-        g_spell->circle->extra_y = g_spell->position[1] + 16.0f;
+        g_spell->circle->extra_x = g_spell->position[0];
+        g_spell->circle->extra_y = g_spell->position[1];
         g_spell->circle->extra_z = g_spell->position[2];
     }
 }

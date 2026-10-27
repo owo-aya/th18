@@ -172,7 +172,8 @@ struct AnmVm {
     void*    node_self;          // +0x574 绘制队列节点
     void*    node_next;          // +0x578
     void*    node_prev;          // +0x57c
-    uint8_t  pad_580[0x40];      // +0x580
+    uint8_t  pad_580[0x3c];      // +0x580
+    AnmVm*   root;              // +0x5bc 位置和旋转继承使用的根 VM
     void*    parent;             // +0x5c0 父 VM（绘制时叠加变换）
     void*    callback_object;    // +0x5c4 Bullet/Laser回指；原+0x5fc在本层用作texture
     uint32_t draw_arg;           // +0x5c8 部分绘制类型的附加参数
@@ -183,12 +184,12 @@ struct AnmVm {
     AnmVm** owner_slot;          // +0x5e0 端口持有槽；原生句柄失效在释放时映射为清槽
     uint8_t  pad_5e4[0x08];      // +0x5e4
     uint32_t sprite_callback;    // +0x5ec op300精灵回调（原表0x4b48c0）
-    float    extra_x;            // +0x5f0 附加平移
+    float    extra_x;            // +0x5f0 调用者位置；游戏坐标不预加画面原点
     float    extra_y;            // +0x5f4
     float    extra_z;            // +0x5f8
     // +0x5fc 原版未用；本层存当前贴图（IDirect3DTexture9*）。
     const void* texture;         // +0x5fc
-    uint8_t  pad_600[0x0c];      // +0x600
+    float    combined_rotation[3]; // +0x600 4097d0 返回的根旋转合成结果
 };
 static_assert(sizeof(AnmVm) == 0x60c, "AnmVm 必须是 0x60c 字节（原版每 sprite 一个 VM）");
 static_assert(offsetof(AnmVm, matrix_src) == 0x3d4, "AnmVm::matrix_src");
@@ -256,7 +257,7 @@ void anm_draw_vm(AnmVm* vm);
 // sub_47d910；loading406d00在此之后改独立alpha状态，再画effect194。
 void anm_apply_blend(AnmVm* vm);
 // sub_481d20：攻击精灵四角，按绘制变换换算到640×480画面坐标。
-void anm_vm_corners(const AnmVm* vm, float corners[4][2]);
+void anm_vm_corners(AnmVm* vm, float corners[4][2]);
 
 // sub_478580: VM 复位。
 void anm_vm_reset(AnmVm* vm);

@@ -134,7 +134,7 @@ void appearance(Pickup& p) {
         AnmResource* resource=anm_get(8,"effect.anm");
         AnmVm* vm=anm_vm_alloc(resource);
         anm_vm_bind_script(vm,resource,101);vm->flags3|=0x1000u;
-        vm->extra_x=p.x+224;vm->extra_y=p.y+16;vm->extra_z=p.z;
+        vm->extra_x=p.x;vm->extra_y=p.y;vm->extra_z=p.z;
         anm_vm_update(vm);anm_queue_add(vm);
         flashes.push_back(vm);anm_manage_vm(vm,&flashes.back());
         if(valuable)sound_play_se(p.kind==4 || p.kind==5?74:48);
@@ -279,7 +279,7 @@ ThreadStatus update(void*) {
         }
         if(p.main.flags2&1)anm_vm_update(&p.main);
         if(p.indicator.flags2&1)anm_vm_update(&p.indicator);
-        if(p.card){p.card->extra_x=p.x+224;p.card->extra_y=p.y+16;p.card->extra_z=p.z;}
+        if(p.card){p.card->extra_x=p.x;p.card->extra_y=p.y;p.card->extra_z=p.z;}
         tick(p.previous,p.frame,p.time);++onscreen;
     }
     if(movement_factor<1)movement_factor+=0.1f;
@@ -292,8 +292,8 @@ ThreadStatus draw(void*) {
     for(Pickup& p:items)if(p.state!=0 && (p.main.flags2&1)!=0 && p.delay<1) {
         // 446d60 tests the VM's local Y, not the item's world Y.
         const bool main_visible=p.main.pos_y>=-8;
-        p.main.extra_x=p.indicator.extra_x=p.x+224;
-        p.main.extra_y=p.indicator.extra_y=p.y+16;
+        p.main.extra_x=p.indicator.extra_x=p.x;
+        p.main.extra_y=p.indicator.extra_y=p.y;
         p.main.extra_z=p.indicator.extra_z=p.z;
         if(main_visible){anm_draw_vm(&p.main);p.indicator_shown=0;}
         else {
@@ -336,7 +336,7 @@ void spawn_item(int32_t kind,const float* position,float angle,float speed,int32
             p.card=anm_vm_alloc(cards);anm_vm_bind_script(p.card,cards,14);
             p.card->flags3|=0x1000u;anm_vm_update(p.card);
             anm_set_sprite(anm_find_child(p.card,15),cards,card_info_by_id(item_scripts[p.kind][0])->text_name);
-            p.card->extra_x=p.x+224;p.card->extra_y=p.y+16;p.card->extra_z=p.z;p.card->color=0xffffffff;
+            p.card->extra_x=p.x;p.card->extra_y=p.y;p.card->extra_z=p.z;p.card->color=0xffffffff;
             anm_queue_add(p.card);anm_manage_vm(p.card,&p.card);
         } else {
             bind(p.main,item_scripts[p.kind][0]);bind(p.indicator,item_scripts[p.kind][1]);

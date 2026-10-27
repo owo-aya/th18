@@ -41,8 +41,8 @@ void add_life_fragment() { status_add_life_fragment(&g_status); }
 
 AnmVm* create_visual(AbilityCard* owner, AnmResource* resource, int script, const float* position) {
     AnmVm* vm = anm_vm_alloc(resource);
-    vm->extra_x = position[0] + 224.0f;
-    vm->extra_y = position[1] + 16.0f;
+    vm->extra_x = position[0];
+    vm->extra_y = position[1];
     vm->extra_z = position[2];
     anm_vm_set_script(vm, resource, script);
     anm_queue_add(vm);
@@ -325,8 +325,8 @@ void card_passive_player_update(AbilityCard* card) {
                 }
                 if (*handle != 0) {
                     AnmVm* vm = find_visual(*handle);
-                    vm->extra_x = x + 224.0f;
-                    vm->extra_y = y + 16.0f;
+                    vm->extra_x = x;
+                    vm->extra_y = y;
                 }
                 timer[0] = timer[1]++;
                 reinterpret_cast<float*>(timer)[2] += 1.0f;
@@ -395,8 +395,8 @@ int card_passive_shot_hit(AttackObject* shot) {
     anm_vm_free(shot->anm_vm);
     AnmVm* visual = anm_vm_alloc(card_manager_ability());
     anm_vm_set_script(visual, card_manager_ability(), 26);
-    visual->extra_x = shot->motion.x + 224.0f;
-    visual->extra_y = shot->motion.y + 16.0f;
+    visual->extra_x = shot->motion.x;
+    visual->extra_y = shot->motion.y;
     visual->extra_z = shot->motion.z;
     shot->anm_handle = anm_queue_add(visual);
     shot->anm_vm = visual;

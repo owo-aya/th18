@@ -57,17 +57,18 @@ float wrap_angle(float a) {
 }
 
 void position_vm(AnmVm* vm, const float* pos) {
-    vm->extra_x = pos[0] + 224.0f;
-    vm->extra_y = pos[1] + 16.0f;
+    vm->extra_x = pos[0];
+    vm->extra_y = pos[1];
     vm->extra_z = pos[2];
 }
 
 AnmVm* create_vm(int script, const float* pos) {
     auto* resource = reinterpret_cast<AnmResource*>(g_player->anm_player);
     AnmVm* vm = anm_vm_alloc(resource);
+    anm_vm_bind_script(vm, resource, script);
     vm->flags3 |= 0x1000;
     position_vm(vm, pos);
-    anm_vm_set_script(vm, resource, script);
+    anm_vm_update(vm);
     anm_queue_add(vm);
     return vm;
 }
@@ -90,14 +91,14 @@ void invulnerable(int frames) {
     g_player->flags_47784 |= 1;
 }
 
-// 0x420f80：Beam子VM的位置，包含父旋转与父平移；不使用sprite尺寸。
+// 420f80: world position through +5bc, without screen origin or coordinate scale.
 void vm_position(AnmVm* vm, float* pos) {
     const float* offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm) + 0x4e4);
     pos[0] = vm->pos_x + vm->extra_x + offset[0];
     pos[1] = vm->pos_y + vm->extra_y + offset[1];
     pos[2] = vm->pos_z + vm->extra_z + offset[2];
-    if (vm->parent && !(vm->flags3 & 0x40000)) {
-        auto* parent = static_cast<AnmVm*>(vm->parent);
+    if (vm->root && !(vm->flags3 & 0x40000)) {
+        auto* parent = vm->root;
         if (vm->flags3 & 0x2000000) {
             const float c = std::cos(parent->rot_z), s = std::sin(parent->rot_z);
             const float x = pos[0];
@@ -264,7 +265,7 @@ void update_marisa() {
     for (int i = 0; AnmVm* beam = anm_find_child(g_primary, g_enhanced ? 35 : 28, i); ++i) {
         float pos[3];
         vm_position(beam, pos);
-        stage::cancel_enemy_bullets_rectangle(pos[0] - 224, pos[1] - 16,
+        stage::cancel_enemy_bullets_rectangle(pos[0], pos[1],
                                              beam->scale_x * 48, beam->scale_y * 160, g_angle, 0);
     }
 }

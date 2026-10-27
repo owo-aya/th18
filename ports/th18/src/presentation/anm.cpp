@@ -54,6 +54,7 @@ void collect_managed_delete(AnmVm* vm, std::list<AnmVm*>& pending)
         if (child != nullptr && child->parent == vm) collect_managed_delete(child, pending);
     if ((vm->flags3 & 0x180u) != 0x100u) pending.push_front(vm);
     vm->flags3 = (vm->flags3 & ~0x80u) | 0x100u;
+    vm->root = nullptr;
     vm->parent = nullptr;
 }
 
@@ -129,45 +130,64 @@ float anm_random01()
     return static_cast<float>(anm_random_u32()) * 2.3283064e-10f;
 }
 
-float total_rotation_z(const AnmVm* vm)
+// 4097d0 returns the accumulated angles before wrapping this VM's own angles.
+const float* total_rotation(AnmVm* vm)
 {
-    float angle = vm->rot_z;
-    if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
-        const auto* root = static_cast<const AnmVm*>(vm->parent);
-        while (root->parent != nullptr) root = static_cast<const AnmVm*>(root->parent);
-        angle += root->rot_z;
+    std::memcpy(vm->combined_rotation, &vm->rot_a, sizeof(vm->combined_rotation));
+    if (vm->root != nullptr && (vm->flags3 & 0x40000u) == 0) {
+        const float* root_rotation = total_rotation(vm->root);
+        for (int axis = 0; axis < 3; ++axis) {
+            vm->combined_rotation[axis] += root_rotation[axis];
+            float& angle = (&vm->rot_a)[axis];
+            int wraps = 0;
+            while (angle > 3.1415927410125732f) {
+                angle -= 6.2831854820251465f;
+                if (wraps++ >= 0x21) break;
+            }
+            while (angle < -3.1415927410125732f) {
+                angle += 6.2831854820251465f;
+                if (wraps++ >= 0x21) break;
+            }
+        }
     }
-    return angle;
+    return vm->combined_rotation;
 }
 
-// 4065a0/4063d0 in the port's 640-pixel scene. Native +5bc names the
-// outer root; +5c0 names the direct parent used separately for sprite scale.
-void flat_scene_position(const AnmVm* vm,float* out)
+void scene_position(const AnmVm* vm, float* out);
+
+// 4063d0: scale the local position, then inherit +5bc or add the origin.
+// Gameplay coordinates stay relative to the playfield until this conversion
+// to the port's 640x480 scene. +5c0 is the separate direct-parent scale link.
+void transform_scene_position(const AnmVm* vm, float* out)
 {
-    const uint32_t mode=(vm->flags3>>22)&7;
-    const float factor=(mode==2 || mode==4)?0.5f:1.0f;
-    const float* offset=reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm)+0x4e4);
-    out[0]=(vm->pos_x+vm->extra_x+offset[0])*factor;
-    out[1]=(vm->pos_y+vm->extra_y+offset[1])*factor;
-    out[2]=(vm->pos_z+vm->extra_z+offset[2])*factor;
-    if(vm->parent!=nullptr && (vm->flags3&0x40000u)==0) {
-        const auto* root=static_cast<const AnmVm*>(vm->parent);
-        while(root->parent!=nullptr)root=static_cast<const AnmVm*>(root->parent);
-        if(vm->flags3&0x2000000u) {
-            const float c=std::cos(root->rot_z),s=std::sin(root->rot_z),x=out[0],y=out[1];
-            out[0]=x*c-y*s;out[1]=y*c+x*s;
+    const uint32_t mode = (vm->flags3 >> 22) & 7;
+    const float factor = (mode == 2 || mode == 4) ? 0.5f : 1.0f;
+    for (int axis = 0; axis < 3; ++axis) out[axis] *= factor;
+    if (vm->root != nullptr && (vm->flags3 & 0x40000u) == 0) {
+        if (vm->flags3 & 0x2000000u) {
+            const float c = std::cos(vm->root->rot_z), s = std::sin(vm->root->rot_z);
+            const float x = out[0], y = out[1];
+            out[0] = x * c - y * s;
+            out[1] = y * c + x * s;
         }
-        float root_position[3];flat_scene_position(root,root_position);
-        for(int axis=0;axis<3;++axis)out[axis]+=root_position[axis];
-    } else {
-        const uint32_t origin=vm->flags3&0x300000u;
-        // Independent gameplay callers already include (224,16) in extra.
-        // An ANM child opting out of inheritance still uses script-local XY.
-        if(origin==0x200000u || origin==0x300000u ||
-            (origin==0x100000u && vm->parent!=nullptr)) {
-            out[0]+=224;out[1]+=16;
-        }
+        float root_position[3];
+        scene_position(vm->root, root_position);
+        for (int axis = 0; axis < 3; ++axis) out[axis] += root_position[axis];
+    } else if ((vm->flags3 & 0x300000u) != 0) {
+        out[0] += 224.0f;
+        out[1] += 16.0f;
     }
+}
+
+// 4065a0: +30 is script motion, +5f0 is the caller's world position,
+// and +4e4 is the offset supplied by 504/505/506.
+void scene_position(const AnmVm* vm, float* out)
+{
+    const float* offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm) + 0x4e4);
+    out[0] = vm->pos_x + vm->extra_x + offset[0];
+    out[1] = vm->pos_y + vm->extra_y + offset[1];
+    out[2] = vm->pos_z + vm->extra_z + offset[2];
+    transform_scene_position(vm, out);
 }
 
 float* float_variable(AnmVm* vm, float* argument)
@@ -214,7 +234,7 @@ float float_argument(AnmVm* vm, const uint8_t* payload, uint16_t mask, int index
         return (anm_random01() * 2.0f - 1.0f) * *reinterpret_cast<const float*>(raw + 0x4d8);
     if (id == 10022) return static_cast<float>(anm_random_u32());
     if (id >= 10016 && id <= 10021) return stage_background_anm_value(id);
-    if (id == 10026) return total_rotation_z(vm);
+    if (id == 10026) return total_rotation(vm)[2];
     if (id == 10029) return static_cast<float>(*reinterpret_cast<const int32_t*>(raw + 0x4e0));
     return *float_variable(vm, &value);
 }
@@ -730,10 +750,21 @@ void anm_draw_vm(AnmVm* vm)
 
     // 文字画笔会逐字改位置后立即绘制，因此变换取当前字段，不依赖上次 update 的矩阵。
     D3DMATRIX world{};
-    const float rotation_z = total_rotation_z(vm);
+    float rotation_z = vm->rot_z;
+    float rotation_x = vm->rot_a, rotation_y = vm->rot_b;
+    if (render_type == 1 || (render_type >= 3 && render_type <= 8)) {
+        const float* rotation = total_rotation(vm);
+        rotation_x = rotation[0]; rotation_y = rotation[1]; rotation_z = rotation[2];
+    }
+    if (primitive) {
+        // 481210: primitives inherit the direct parent's angle, unlike sprites.
+        rotation_z = vm->rot_z;
+        if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0)
+            rotation_z += static_cast<const AnmVm*>(vm->parent)->rot_z;
+    }
     const float cz = std::cos(rotation_z), sz = std::sin(rotation_z);
-    const float cx = std::cos(vm->rot_a), sx = std::sin(vm->rot_a);
-    const float cy = std::cos(vm->rot_b), sy = std::sin(vm->rot_b);
+    const float cx = std::cos(rotation_x), sx = std::sin(rotation_x);
+    const float cy = std::cos(rotation_y), sy = std::sin(rotation_y);
     world._11 = cy * cz * vm->scale_x;
     world._12 = cy * sz * vm->scale_x;
     world._13 = -sy * vm->scale_x;
@@ -757,6 +788,24 @@ void anm_draw_vm(AnmVm* vm)
     if (render_type<=3) {
         world._11*=vm->scale_extra_x;world._12*=vm->scale_extra_x;
         world._21*=vm->scale_extra_y;world._22*=vm->scale_extra_y;
+    } else if (render_type == 8) {
+        // 480160: own scale and all three root angles, in opcode 437's order.
+        const float angles[3] = {rotation_x, rotation_y, rotation_z};
+        const int orders[6][3] = {{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
+        const uint32_t order = (vm->flags3 >> 4) & 7;
+        float axes[2][3] = {{vm->scale_x * vm->scale_extra_x,0,0},
+                            {0,vm->scale_y * vm->scale_extra_y,0}};
+        if (order < 6) for (int axis : orders[order]) {
+            const float c = std::cos(angles[axis]), s = std::sin(angles[axis]);
+            const int a = (axis + 1) % 3, b = (axis + 2) % 3;
+            for (auto& row : axes) {
+                const float x = row[a], y = row[b];
+                row[a] = x * c - y * s;
+                row[b] = x * s + y * c;
+            }
+        }
+        world._11 = axes[0][0]; world._12 = axes[0][1]; world._13 = axes[0][2];
+        world._21 = axes[1][0]; world._22 = axes[1][1]; world._23 = axes[1][2];
     }
     if(vm->sprite_callback==1) {
         const float scale=stage::bullet_scale_for_vm(vm);
@@ -765,15 +814,26 @@ void anm_draw_vm(AnmVm* vm)
     }
     world._33 = 1.0f;
     const float* offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm) + 0x4e4);
-    world._41 = vm->pos_x + vm->extra_x + offset[0];
-    world._42 = vm->pos_y + vm->extra_y + offset[1];
-    world._43 = render_type == 8 ? vm->pos_z + vm->extra_z + offset[2] : 0.0f;
+    float position[3] = {vm->pos_x + vm->extra_x + offset[0],
+                         vm->pos_y + vm->extra_y + offset[1],
+                         vm->pos_z + vm->extra_z + offset[2]};
+    if (render_type == 8) {
+        // 480160 subtracts the scaled origin before coordinate inheritance,
+        // not from the sprite vertices before rotating them.
+        position[0] -= vm->origin_x * vm->scale_x * vm->scale_extra_x;
+        position[1] -= vm->origin_y * vm->scale_y * vm->scale_extra_y;
+    }
+    transform_scene_position(vm, position);
+    const float scene_scale = background_3d ? 1.0f : 2.0f;
+    world._41 = position[0] * scene_scale;
+    world._42 = position[1] * scene_scale;
+    // 480160 keeps local Z after converting XY; it does not inherit root Z.
+    world._43 = render_type == 8 ? (vm->pos_z + vm->extra_z + offset[2]) * scene_scale : 0.0f;
     world._44 = 1.0f;
     // sub_4063d0 / sub_47e8f0：op313=2 的素材用 1280 坐标，其余标题
     // primitive 用 640 坐标。当前投影统一为 1280，所以后者在这里乘二。
     const uint32_t coordinate_mode = (vm->flags3 >> 22) & 7;
     // Background layer 2 uses native world units, not the 1280 UI canvas.
-    const float position_scale = (background_3d || coordinate_mode == 2 || coordinate_mode == 4) ? 1.0f : 2.0f;
     const float size_scale = (background_3d || coordinate_mode == 2) ? 1.0f : 2.0f;
     world._11 *= size_scale;
     world._12 *= size_scale;
@@ -781,30 +841,8 @@ void anm_draw_vm(AnmVm* vm)
     world._21 *= size_scale;
     world._22 *= size_scale;
     world._23 *= size_scale;
-    world._41 *= position_scale;
-    world._42 *= position_scale;
-    world._43 *= position_scale;
-    if(render_type<=3) {
-        float position[3];flat_scene_position(vm,position);
-        world._41=position[0]*2;world._42=position[1]*2;
-    } else {
-        const AnmVm* position_root = vm;
-        while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0) {
-            const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
-            const uint32_t mode = (parent->flags3 >> 22) & 7;
-            const float factor = (mode == 2 || mode == 4) ? 1.0f : 2.0f;
-            const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
-            world._41 += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
-            world._42 += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
-            if (render_type == 8) world._43 += (parent->pos_z + parent->extra_z + parent_offset[2]) * factor;
-            position_root = parent;
-        }
-        if (!background_3d && (position_root->flags3 & 0x300000u) == 0x200000u) {
-            world._41 += 448.0f;world._42 += 32.0f;
-        }
-    }
     // sub_47e8f0：父VM的比例同样参与子精灵大小（abcard0 的 .75 外壳）。
-    if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
+    if (render_type != 8 && vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
         const AnmVm* parent = static_cast<const AnmVm*>(vm->parent);
         world._11 *= parent->scale_x;
         world._12 *= parent->scale_x;
@@ -823,8 +861,10 @@ void anm_draw_vm(AnmVm* vm)
     const float half_h = vm->sprite_h * 0.5f;
     const int anchor_x = (vm->flags2 >> 22) & 3;
     const int anchor_y = (vm->flags2 >> 24) & 3;
-    const float left = (anchor_x == 1 ? 0.0f : (anchor_x == 2 ? -vm->sprite_w : -half_w)) - vm->origin_x;
-    const float top = (anchor_y == 1 ? 0.0f : (anchor_y == 2 ? -vm->sprite_h : -half_h)) - vm->origin_y;
+    const float left = (anchor_x == 1 ? 0.0f : (anchor_x == 2 ? -vm->sprite_w : -half_w)) -
+                      (render_type == 8 ? 0.0f : vm->origin_x);
+    const float top = (anchor_y == 1 ? 0.0f : (anchor_y == 2 ? -vm->sprite_h : -half_h)) -
+                     (render_type == 8 ? 0.0f : vm->origin_y);
     const float right = left + vm->sprite_w;
     const float bottom = top + vm->sprite_h;
     uint32_t right_color = color;
@@ -1027,14 +1067,13 @@ void anm_draw_vm(AnmVm* vm)
     manager->draw_count++;
 }
 
-void anm_vm_corners(const AnmVm* vm, float corners[4][2])
+void anm_vm_corners(AnmVm* vm, float corners[4][2])
 {
     const uint32_t coordinate_mode = (vm->flags3 >> 22) & 7;
-    const float position_scale = (coordinate_mode == 2 || coordinate_mode == 4) ? 0.5f : 1.0f;
     const float size_scale = coordinate_mode == 2 ? 0.5f : 1.0f;
-    const float* vm_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm) + 0x4e4);
-    float center_x = (vm->pos_x + vm->extra_x + vm_offset[0]) * position_scale;
-    float center_y = (vm->pos_y + vm->extra_y + vm_offset[1]) * position_scale;
+    float position[3];
+    scene_position(vm, position);
+    const float center_x = position[0], center_y = position[1];
     const int anchor_x = (vm->flags2 >> 22) & 3;
     const int anchor_y = (vm->flags2 >> 24) & 3;
     const float left = (anchor_x == 1 ? 0.0f : anchor_x == 2 ? -vm->sprite_w : -vm->sprite_w * 0.5f) - vm->origin_x;
@@ -1043,7 +1082,9 @@ void anm_vm_corners(const AnmVm* vm, float corners[4][2])
     const float bottom = top + vm->sprite_h;
     const float bases[4][2] = {{left, top}, {right, top}, {left, bottom}, {right, bottom}};
 
-    const float angle = total_rotation_z(vm);
+    const uint32_t render_type = (vm->flags2 >> 26) & 0x1f;
+    const float angle = (render_type == 0 || render_type == 2 || render_type == 3)
+        ? vm->rot_z : total_rotation(vm)[2];
     const float cz = std::cos(angle), sz = std::sin(angle);
     const float cx = std::cos(vm->rot_a), sx = std::sin(vm->rot_a);
     const float cy = std::cos(vm->rot_b), sy = std::sin(vm->rot_b);
@@ -1051,7 +1092,6 @@ void anm_vm_corners(const AnmVm* vm, float corners[4][2])
     float xy = cy * sz * vm->scale_x;
     float yx = (sx * sy * cz - cx * sz) * vm->scale_y;
     float yy = (sx * sy * sz + cx * cz) * vm->scale_y;
-    const uint32_t render_type = (vm->flags2 >> 26) & 0x1f;
     // 481d20 differs from drawing: type 3 also requests unrotated corners.
     if (render_type == 0 || render_type == 2 || render_type == 3) {
         xx=vm->scale_x;xy=0;yx=0;yy=vm->scale_y;
@@ -1064,25 +1104,6 @@ void anm_vm_corners(const AnmVm* vm, float corners[4][2])
     if (render_type<=3) {
         xx*=vm->scale_extra_x;xy*=vm->scale_extra_x;
         yx*=vm->scale_extra_y;yy*=vm->scale_extra_y;
-    }
-
-    if(render_type<=3) {
-        float position[3];flat_scene_position(vm,position);
-        center_x=position[0];center_y=position[1];
-    } else {
-        const AnmVm* position_root = vm;
-        while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0) {
-            const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
-            const uint32_t mode = (parent->flags3 >> 22) & 7;
-            const float factor = (mode == 2 || mode == 4) ? 0.5f : 1.0f;
-            const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
-            center_x += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
-            center_y += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
-            position_root = parent;
-        }
-        if ((position_root->flags3 & 0x300000u) == 0x200000u) {
-            center_x += 224.0f;center_y += 16.0f;
-        }
     }
 
     if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
@@ -1945,6 +1966,7 @@ void anm_execute_script(AnmVm* vm)
             AnmVm* child = anm_vm_alloc(res);
             anm_vm_bind_script(child, res, script_id);
             child->parent = vm;
+            child->root = vm->root != nullptr ? vm->root : vm;
             child->flags3 = (child->flags3 & ~0x8000000u) | (vm->flags3 & 0x8000000u);
             child->node_flags = (instr->type == 501 || instr->type == 503 ? 4u : 0u) |
                                 (instr->type == 502 || instr->type == 503 ? 2u : 0u);
