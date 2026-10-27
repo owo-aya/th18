@@ -1417,6 +1417,7 @@ void anm_vm_free(AnmVm* vm)
         return;
     unlink_independent(vm);
     if(vm->callback_index==7)extra_maple_free(vm);
+    if(vm->callback_index==2)extra_charge_free(vm);
     if (vm->owner_slot != nullptr) *vm->owner_slot = nullptr;
     while(vm->child_head)anm_vm_free(vm->child_head);
     unlink_child(vm);
@@ -1436,6 +1437,7 @@ void anm_vm_free(AnmVm* vm)
 // slots are port bookkeeping; keep them while clearing script callbacks/parents.
 void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id)
 {
+    if(vm->callback_index==2)extra_charge_free(vm);
     // Child ownership was formerly tracked by the allocation table, outside
     // the script template. Keep it across a template copy just like queue links.
     AnmVm* child_head=vm->child_head;
@@ -1462,8 +1464,7 @@ void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id)
     vm->expr_stack_a2 = 0;
     vm->expr_stack_a = -1.0f;
     vm->interp_flags = 1;
-    vm->expr_stack_b = -1.0f;
-    vm->interp_b1 = vm->interp_b2 = 0;
+    vm->elapsed_previous=-1;vm->elapsed=0;vm->elapsed_fraction=0;
 }
 
 void anm_vm_set_script(AnmVm* vm, AnmResource* res, int script_id)
@@ -1771,6 +1772,7 @@ void anm_execute_script(AnmVm* vm)
     // flags2 的 0x4000 位；没有精确入口时使用脚本中的 label -1。
     if (vm->label != 0)
     {
+        if(vm->callback_index==2)extra_charge_label(vm,vm->label);
         uint32_t offset = 0;
         int32_t destination = -1;
         int32_t fallback = -1;
@@ -2056,6 +2058,13 @@ void anm_execute_script(AnmVm* vm)
             break;
         }
 
+        case 508: { // 42af70 effect 1: charged particles driven by 405030.
+            uint32_t effect=*reinterpret_cast<const uint32_t*>(payload);
+            if(mask&1)effect=anm_vm_get_var(vm,effect);
+            if(effect==1)extra_charge_start(vm);
+            vm->script_cursor+=length;
+            break;
+        }
         case 509: // 原class66：复制直接父VM的脚本变量4a4..4e0。
             if (vm->parent != nullptr)
                 std::memcpy(reinterpret_cast<uint8_t*>(vm) + 0x4a4,
@@ -2692,8 +2701,18 @@ static void update_vm_self(AnmVm* vm)
     if(vm->callback_index==7 && extra_maple_update(vm)) {
         vm->script_cursor=-1;vm->flags2&=~1u;return;
     }
+    if(vm->callback_index==2 && extra_charge_update(vm)) {
+        vm->script_cursor=-1;vm->flags2&=~1u;return;
+    }
     // 478580: stopped/deleted scripts bypass clocks, motion and interpolation.
     if (vm->script_cursor<0) return;
+    // 478580 increments +560 independently of ANM script time (+54c).
+    // Charge particles use this age to start their second Hermite segment.
+    if(!(vm->flags2&0x200000u)) {
+        vm->elapsed_previous=vm->elapsed;
+        vm->elapsed_fraction+=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
+        vm->elapsed=int32_t(vm->elapsed_fraction);
+    }
     anm_execute_script(vm);
     if (vm->script_cursor<0) return;
 

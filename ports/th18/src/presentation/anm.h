@@ -164,9 +164,9 @@ struct AnmVm {
     float    expr_stack_a2;      // +0x554
     uint8_t  pad_558[0x04];      // +0x558
     uint32_t interp_flags;       // +0x55c
-    float    expr_stack_b;       // +0x560 表达式栈 2（+0x560 起，sub_402a80 复位）
-    float    interp_b1;          // +0x564
-    float    interp_b2;          // +0x568
+    int32_t  elapsed_previous;   // +0x560 timer independent of script jumps/waits
+    int32_t  elapsed;            // +0x564
+    float    elapsed_fraction;  // +0x568
     uint8_t  pad_56c[0x04];      // +0x56c
     uint32_t node_flags;         // +0x570
     void*    node_self;          // +0x574 绘制队列节点

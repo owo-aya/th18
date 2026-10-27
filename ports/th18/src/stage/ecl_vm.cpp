@@ -641,7 +641,7 @@ int32_t enemy_update_presentation(Enemy& e) {
             card_passive_damage_event();
             if((spell_manager()->flags&0x21)==0x21)damage/=30;
             *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x6234)+=damage;
-            if((e.flag&16)==0 && e.damage_wait==0) {
+            if((e.flag&16)==0 && e.state6320<1) {
                 if((e.flags6238&1)==0)e.health-=damage;
                 else {
                     auto* hp=reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x622c);
@@ -681,7 +681,12 @@ int32_t enemy_update_presentation(Enemy& e) {
         if(vm->flags3&0x200){auto* motion=reinterpret_cast<Motion*>(&e.x);vm->flags2|=4;vm->rot_z=std::atan2(motion->vel_y,motion->vel_x);}
     }
     if(e.fade_time>0)e.fade_time-=g_speed_scale;
-    if(e.damage_wait>0)--e.damage_wait;
+    if(e.state6320>0) {
+        e.state631c=e.state6320;e.state6328=0;
+        float& remaining=*reinterpret_cast<float*>(&e.field6324);
+        remaining-=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
+        e.state6320=int32_t(remaining);
+    }
     e.phase_fraction+=g_speed_scale;e.phase_time=int32_t(e.phase_fraction);
     auto* raw=reinterpret_cast<uint8_t*>(&e);
     *reinterpret_cast<int32_t*>(raw+0x62f0)=0;
@@ -754,7 +759,7 @@ void damage_enemies_in_circle(float x,float y,float radius,int32_t damage) {
         const float dx=e.x-x,dy=e.y-y;
         if((e.flag&0xc000021u)!=0 || (e.flag&0x2000000u)!=0 || dx*dx+dy*dy>radius*radius)
             continue;
-        if((e.flag&16)==0 && e.damage_wait==0)e.health-=damage;
+        if((e.flag&16)==0 && e.state6320<1)e.health-=damage;
         if(damage!=0)card_passive_damage_event();
         if(!enemy_phase_change(e) && e.health<=0 && (e.flag&0x80)==0){enemy_defeat(e);e.flag|=0x2000000;}
     }
@@ -771,6 +776,13 @@ static void bullet_cancel(EnemyBullet& b,int kind) {
     cancel_bullet_point(b.x,b.y,kind);
     b.cancel_state=4;b.x+=b.vx*g_speed_scale*0.5f;b.y+=b.vy*g_speed_scale*0.5f;
     anm_interrupt(b.vm,1);
+}
+// 4297a0: unconditional full-field cancellation includes delayed bullets.
+static void clear_all_enemy_bullets() {
+    for(auto& b:g_enemy_bullets)if(!b.removed && b.cancel_state!=3) {
+        if(b.delay==0)sound_play_se_at(0x47,b.x);
+        bullet_cancel(b,0);
+    }
 }
 void cancel_bullet_point(float x,float y,int kind) {
     if(kind!=0 && x+32>-192 && x-32<192 && y+32>0 && y-32<448) {
@@ -916,8 +928,27 @@ static void enemy_restart(Enemy& e,const char* sub) {
 static bool enemy_time_change(Enemy& e) {
     for(auto& interrupt:e.interrupts) {
         if(interrupt.health<0 || interrupt.time<=0)continue;
+        if(e.flag&0x800000u) {
+            const int remaining=interrupt.time-e.phase_time;
+            g_stage->field1b8=remaining/60;
+            g_stage->timer_centiseconds=(remaining%60)*100/60;
+            if(g_stage->field1b8>99)g_stage->field1b8=g_stage->timer_centiseconds=99;
+        }
         if(e.phase_time>=interrupt.time) {
             e.health=interrupt.health;interrupt.health=-1;e.flag|=0x1000000;
+            // 42ed40: timeout is a failed capture unless this is a survival spell.
+            auto* spell=spell_manager();
+            if(!(spell->flags&8)) {
+                spell->flags|=0x80;
+                if((spell->flags&1) && spell->timer>=60) {
+                    spell->bonus=0;spell->flags&=~0x22u;
+                } else if((spell->flags&1) && bomb_active())spell->flags|=0x20;
+                g_enemy_manager->field44=0;
+            } else if((spell->flags&9)==9) {
+                e.flag&=~0x1000000u;
+                *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0xac)+=e.field6828;
+            }
+            e.field6828=0;
             const char* sub=interrupt.time_sub;
             enemy_restart(e,sub);return true;
         }
@@ -929,6 +960,10 @@ static bool enemy_phase_change(Enemy& e) {
     for(auto& interrupt:e.interrupts) {
         if(interrupt.health<0)continue;
         if(e.health<=interrupt.health) {
+            if(e.field6828!=0 && e.field6824==g_status.unk_008) {
+                *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0xac)+=e.field6828;
+                e.field6828=0;
+            }
             e.health=interrupt.health;interrupt.health=-1;e.flag&=~0x1000000u;
             enemy_restart(e,interrupt.health_sub);return true;
         }
@@ -1367,6 +1402,12 @@ static int32_t enemy_exec(void* host) {
         const int offset=arg_int(e,1);
         enemy_set_animation(e,arg_int(e,0),e.primary_base_script+(offset<0?0:offset+5),e.anm_index);break;
     }
+    case 319: {
+        // 436cf0: direct Z rotation of an existing enemy animation slot.
+        auto* vm=e.visual[arg_int(e,0)];
+        if(vm){vm->rot_z=arg_float(e,1);vm->flags2|=4;}
+        break;
+    }
     case 326:case 328: {
         const int slot=arg_int(e,0);auto* vm=e.visual[slot];
         if(vm==nullptr)break; // 436cf0 ignores an animation slot whose VM has ended.
@@ -1537,7 +1578,11 @@ static int32_t enemy_exec(void* host) {
         [[fallthrough]];
     case 562:enemy_drop_items(e);break; // class67: explicit dropItemsSp is unconditional.
     case 510:e.drop_kind=arg_int(e,0);break;
-    case 511:e.health=e.health_max=e.health_previous=arg_int(e,0);break;
+    case 511:
+        e.health=e.health_max=e.health_previous=arg_int(e,0);
+        *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x622c)=e.health*7;
+        if(e.flag&0x800000u)e.flag|=0x40000000u;
+        break;
     case 513:e.phase_time=0;e.phase_fraction=0;break;
     case 512: {
         const int slot=arg_int(e,0);
@@ -1554,30 +1599,19 @@ static int32_t enemy_exec(void* host) {
         auto& event=e.interrupts[arg_int(e,0)];event.health=arg_int(e,1);event.time=arg_int(e,2);
         event.health_sub=event.time_sub=reinterpret_cast<const char*>(ins)+32;break;
     }
-    case 515:e.damage_wait=arg_int(e,0);break;
+    case 515:
+        e.state631c=-1;e.state6320=arg_int(e,0);
+        *reinterpret_cast<float*>(&e.field6324)=float(e.state6320);
+        e.state6328=0;e.flags632c|=1;break;
     case 516:sound_play_se_at(arg_int(e,0),e.x);break;
     case 517:stage_screen_shake(arg_int(e,0),arg_int(e,1),arg_int(e,2));break;
-    case 518:{int entry=arg_int(e,0);if(session().stage==6 && entry==0 && replay_mode()!=ReplayMode::Playback && card_manager_owned(Blank))entry=4;msg_start(entry);g_stage->dialog_active=msg_active();clear_enemy_bullets(e.x,e.y,99999.0f,false);laser::clear_lasers(0);break;}
-    case 519:if(!msg_wait_released())return -1;break;
-    case 520:for(int i=0;i<3;++i)if(find_enemy(g_enemy_manager->boss_id[i]))return -1;break;
-    case 522:case 537:case 538:case 539: {
-        const uint32_t size=*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(ins)+0x1c);
-        std::string name(reinterpret_cast<const char*>(ins)+0x20,size);uint8_t key=0x77,step=7;
-        for(char& c:name){c=char(uint8_t(c)^key);key+=step;step+=0x10;}
-        int id=arg_int(e,0);if(op>=537)id+=g_difficulty-(op-537);
-        spell_start(id,name.c_str(),arg_int(e,1),arg_int(e,2));break;
+    case 518: {
+        int entry=arg_int(e,0);
+        if(session().stage==6 && entry==0 && replay_mode()!=ReplayMode::Playback && card_manager_owned(Blank))entry=4;
+        msg_start(entry);g_stage->dialog_active=msg_active();
+        clear_all_enemy_bullets();laser::clear_lasers(0);
+        [[fallthrough]]; // 430d40 also performs the 525 enemy cleanup.
     }
-    case 523: {
-        auto* spell=spell_manager();
-        if((spell->flags&3)==3 && card_manager_owned(Kiseru))spawn_item(4,&e.x,-1.57079637f,2.2f,60);
-        spell_end();break;
-    }
-    case 521:e.interrupts[arg_int(e,0)].time_sub=reinterpret_cast<const char*>(ins)+24;break;
-    case 524: {
-        const int wave=arg_int(e,0);stage_session_set_wave(wave);e.field6824=wave;e.field6828=0;break;
-    }
-    case 527:hud_boss_segment(e.boss_index,arg_int(e,0),arg_float(e,1)/float(e.health_max),uint32_t(arg_int(e,2)));break;
-    case 540:hud_boss_spells(arg_int(e,0));break;
     case 525: {
         // 430710: clear vulnerable enemies and scripted familiars without
         // their normal drops; boss/hidden controllers survive unless bit100.
@@ -1603,6 +1637,26 @@ static int32_t enemy_exec(void* host) {
         auto* manager=g_enemy_manager;manager->field_a4=0;manager->field98=manager->wave_index;
         manager->wave_frac+=g_speed_scale;manager->wave_index=int32_t(manager->wave_frac);break;
     }
+    case 519:if(!msg_wait_released())return -1;break;
+    case 520:for(int i=0;i<3;++i)if(find_enemy(g_enemy_manager->boss_id[i]))return -1;break;
+    case 522:case 537:case 538:case 539: {
+        const uint32_t size=*reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(ins)+0x1c);
+        std::string name(reinterpret_cast<const char*>(ins)+0x20,size);uint8_t key=0x77,step=7;
+        for(char& c:name){c=char(uint8_t(c)^key);key+=step;step+=0x10;}
+        int id=arg_int(e,0);if(op>=537)id+=g_difficulty-(op-537);
+        spell_start(id,name.c_str(),arg_int(e,1),arg_int(e,2));break;
+    }
+    case 523: {
+        auto* spell=spell_manager();
+        if((spell->flags&3)==3 && card_manager_owned(Kiseru))spawn_item(4,&e.x,-1.57079637f,2.2f,60);
+        spell_end();break;
+    }
+    case 521:e.interrupts[arg_int(e,0)].time_sub=reinterpret_cast<const char*>(ins)+24;break;
+    case 524: {
+        const int wave=arg_int(e,0);stage_session_set_wave(wave);e.field6824=wave;e.field6828=0;break;
+    }
+    case 527:hud_boss_segment(e.boss_index,arg_int(e,0),arg_float(e,1)/float(e.health_max),uint32_t(arg_int(e,2)));break;
+    case 540:hud_boss_spells(arg_int(e,0));break;
     case 545:laser::clear_phase_lasers();break;
     case 542:spell_manager()->flags|=8;break;
     case 546: {
@@ -1639,7 +1693,7 @@ static int32_t enemy_exec(void* host) {
         *reinterpret_cast<int32_t*>(raw+0x62e0)=arg_int(e,0);
         reset_drop_timer(e);break;
     }
-    case 613:clear_enemy_bullets(0,224,10000,false);break;
+    case 613:clear_all_enemy_bullets();laser::clear_lasers(1);break;
     case 535: {int values[4];for(int i=0;i<4;i++)values[i]=arg_int(e,i+1);*vm_write_int(g_active_thread,ins,0)=values[g_difficulty<3?g_difficulty:3];break;}
     case 536: {float values[4];for(int i=0;i<4;i++)values[i]=arg_float(e,i+1);*vm_write_float(g_active_thread,ins,0)=values[g_difficulty<3?g_difficulty:3];break;}
     case 556:e.death_sub=reinterpret_cast<const char*>(ins)+20;break;

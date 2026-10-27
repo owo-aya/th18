@@ -101,7 +101,7 @@ struct Stage {
     int32_t dialog_active; // +0x1b0 MSG scene exists
     void* msg_data;   // +0x1b4 对话 .msg 文件数据（0x0043a730 读入）
     int32_t field1b8;  // +0x1b8 载入时 -1
-    uint8_t pad1bc[0x1c0 - 0x1bc];
+    int32_t timer_centiseconds; // +0x1bc Boss timeout remainder
     int32_t field1c0;  // +0x1c0 载入时 -1
     uint8_t hud_blocks[0x54 * 3];  // +0x1c4 三个目标的血条/HUD 块（步长 0x54）
     void* front_anm;  // +0x2c0 fronttr.anm 句柄（0x0043b800 里 0x00486880(5, ...)）

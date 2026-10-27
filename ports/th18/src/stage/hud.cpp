@@ -10,7 +10,10 @@
 #include "player/player.h"
 #include "presentation/anm.h"
 #include "presentation/text.h"
+#include "presentation/sound.h"
+#include "gameplay/spell.h"
 #include "stage/stage.h"
+#include "stage/session.h"
 #include "stage/enemy.h"
 #include "stage/ecl_vm.h"
 #include "gameplay/score_data.h"
@@ -24,7 +27,7 @@ AnmVm* g_rank;
 AnmVm* g_character;
 AnmVm* g_lives[7];
 AnmVm* g_bombs[7];
-AnmVm* g_timer_positions[2]; // 原Stage+84/+88，ASCII2/3的隐藏倒计时坐标根。
+AnmVm* g_timer_positions[2]; // Stage+84/+88, ASCII2/3 countdown digits.
 AnmVm* g_active;
 CardId g_active_id;
 AnmVm* g_cards[256];
@@ -142,7 +145,7 @@ void update_boss_hud() {
             for(int segment=0;segment<4;++segment)*reinterpret_cast<float*>(block+0x10+segment*8)=0;
         }
         const bool visible=boss && boss->health<100000 && !(boss->flag&0x31) &&
-            boss->damage_wait<1 && !g_stage->dialog_active;
+            boss->state6320<1 && !g_stage->dialog_active;
         if(!visible) {
             for(auto*& vm:g_boss_rings[slot]){anm_vm_free(vm);vm=nullptr;}
             *reinterpret_cast<int32_t*>(block+0x4c)=0;
@@ -186,6 +189,54 @@ void update_boss_hud() {
         }
         if(g_boss_stars[n])anm_vm_update(g_boss_stars[n]);
     }
+}
+
+bool countdown_visible() {
+    return g_stage->field1b8>=0 && find_enemy(g_enemy_manager->boss_id[0]) &&
+        !(g_enemy_manager->flags88&1) && !g_stage->dialog_active &&
+        !(stage_session_flags()&0x10000u);
+}
+
+void update_countdown() {
+    // 43bb70: visibility, player proximity, seconds pulses and digit sprites.
+    if(!countdown_visible()) {
+        for(auto* vm:g_timer_positions)vm->flags2&=~2u;
+        g_stage->flags=(g_stage->flags&~0x200u)|0x400u;
+        return;
+    }
+    for(auto* vm:g_timer_positions)vm->flags2|=2u;
+    const uint32_t state=g_stage->flags&0x600u;
+    const bool bottom=(spell_manager()->flags&0x100)!=0;
+    if(state==0) {
+        if((!bottom && g_player->y<128) || (bottom && g_player->y>320)) {
+            g_stage->flags=(g_stage->flags&~0x400u)|0x200u;
+            for(auto* vm:g_timer_positions)anm_set_label(vm,5);
+        }
+    } else if(state==0x200) {
+        if((!bottom && g_player->y<160) || (bottom && g_player->y>288)) {
+            for(auto* vm:g_timer_positions)anm_set_label(vm,4);
+            g_stage->flags&=~0x600u;
+        }
+    } else {
+        for(auto* vm:g_timer_positions) {
+            anm_interrupt(vm,(spell_manager()->flags&1)?2:3);
+            anm_interrupt(vm,4);
+        }
+        g_stage->flags&=~0x600u;
+    }
+    const int seconds=g_stage->field1b8,previous=g_stage->field1c0;
+    if(seconds<previous && seconds<5) {
+        for(auto* vm:g_timer_positions)anm_set_label(vm,seconds<2?9:8);
+        sound_play_se(seconds<2?12:11);
+    } else if(seconds>previous) {
+        for(auto* vm:g_timer_positions)anm_set_label(vm,7);
+    }
+    if(seconds!=previous) {
+        auto* ascii=anm_manager()->resources[2];
+        anm_set_sprite(g_timer_positions[0],ascii,239+seconds/10);
+        anm_set_sprite(g_timer_positions[1],ascii,239+seconds%10);
+    }
+    g_stage->field1c0=seconds;
 }
 } // namespace
 
@@ -284,6 +335,7 @@ void hud_update() {
     if(g_status.lives!=g_previous_lives[0] || g_status.unk_070!=g_previous_lives[1] || g_status.lives_max!=g_previous_lives[2])hud_refresh_lives();
     if(g_status.unk_07c!=g_previous_bombs[0] || g_status.unk_080!=g_previous_bombs[1] || g_status.unk_088!=g_previous_bombs[2])hud_refresh_bombs();
     update_boss_hud();
+    update_countdown();
     anm_vm_update(g_frame);
     anm_vm_update(g_rank);
     anm_vm_update(g_character);
@@ -318,6 +370,17 @@ void hud_select_card() {
 }
 
 void hud_render() {
+    // 43cd00: fractional seconds follow ASCII2's animated position and alpha.
+    if(countdown_visible() && !(stage_session_flags()&0x10u)) {
+        auto* vm=g_timer_positions[0];
+        const float x=vm->pos_x+16,y=vm->pos_y-7;
+        TextPos pos{x*2,y*2,0};
+        text_set_life(0);text_set_group(2);text_set_style(4);
+        text_set_alignment(1,1);text_set_color(vm->color);text_set_size(2,2);
+        text_draw_fmt(text_manager(),&pos,".");
+        pos.x=(x+8)*2;pos.y=(y+6)*2;text_set_size(1.2f,1.2f);
+        text_draw_fmt(text_manager(),&pos,"%.2d",g_stage->timer_centiseconds);
+    }
     text_set_group(3);
     const uint32_t alpha = g_lives[0]->color & 0xff000000u;
     char value[64];

@@ -23,6 +23,14 @@ struct Maple {
     uint32_t colors[32],head_color;
     alignas(4) uint8_t motion[0x58];
 };
+// 404fc0/405030: 50 groups of four independent effect150/151 particles.
+struct Charge {
+    AnmVm* particles[200]{};
+    Point middle[200]{},tangent[200]{};
+    int phase[200]{};
+    int previous=-1,time=0;
+    float fraction=0;
+};
 struct Aura {
     stage::Enemy* enemy;
     float target,radius,phase_x,phase_y;
@@ -191,6 +199,105 @@ void extra_maple_draw(AnmVm* vm) {
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,62,vertices,sizeof(RibbonVertex));
 }
 void extra_maple_free(AnmVm* vm) {delete static_cast<Maple*>(vm->callback_object);vm->callback_object=nullptr;}
+
+namespace {
+Point charge_polar(float direction,float radius) {
+    return {std::cos(direction)*radius,std::sin(direction)*radius,0};
+}
+Point charge_add(Point a,Point b) {return {a.x+b.x,a.y+b.y,a.z+b.z};}
+Point charge_sub(Point a,Point b) {return {a.x-b.x,a.y-b.y,a.z-b.z};}
+Point charge_scale(Point a,float scale) {return {a.x*scale,a.y*scale,a.z*scale};}
+Point charge_normalize(Point a) {
+    const float length=std::sqrt(a.x*a.x+a.y*a.y+a.z*a.z);
+    return length==0?Point{}:charge_scale(a,1.0f/length);
+}
+Point charge_jitter(float radius) {
+    // 405030 uses the visual RNG (4cf288), angle before distance.
+    const float direction=(float(rng_next(card_rng()))*4.6566129e-10f-1.0f)*pi;
+    return charge_polar(direction,visual_random()*radius);
+}
+void charge_path(AnmVm* vm,int duration,Point start,Point end,Point tangent_start,Point tangent_end) {
+    // 405ad0 / ANM position interpolator: cubic Hermite, mode 8.
+    auto* raw=reinterpret_cast<uint8_t*>(vm)+0x90;
+    std::memcpy(raw,&start,12);std::memcpy(raw+12,&end,12);
+    std::memcpy(raw+24,&tangent_start,12);std::memcpy(raw+36,&tangent_end,12);
+    auto* ints=reinterpret_cast<int32_t*>(raw);
+    ints[15]=-1;ints[16]=0;ints[17]=0;ints[18]=0;ints[19]|=1;
+    ints[20]=duration;ints[21]=8;
+}
+}
+
+void extra_charge_start(AnmVm* vm) {
+    vm->callback_object=new Charge{};
+    vm->callback_index=2;
+}
+bool extra_charge_update(AnmVm* vm) {
+    auto& charge=*static_cast<Charge*>(vm->callback_object);
+    const Point center{vm->extra_x,vm->extra_y,vm->extra_z};
+    const float curve=*reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(vm)+0x4cc);
+    const int duration=*reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(vm)+0x4a4);
+    const Point source=charge_add(center,charge_polar(vm->rot_z,300));
+    const Point middle=charge_add(center,charge_polar(vm->rot_z+curve,150));
+    if(charge.time!=charge.previous && charge.time<50) {
+        for(int n=0;n<4;++n) {
+            const int slot=charge.time*4+n;
+            auto* particle=anm_vm_alloc(anm_manager()->resources[8]);
+            anm_vm_set_script(particle,anm_manager()->resources[8],n==3?151:150);
+            particle->flags3|=0x1000u;
+            anm_queue_add(particle);anm_manage_vm(particle,&charge.particles[slot]);
+            particle->color=vm->color;
+            if(n==3) {
+                uint32_t rgb=0;
+                for(int shift=0;shift<24;shift+=8)
+                    rgb|=uint32_t(uint8_t(300-((vm->color>>shift)&255)))<<shift;
+                particle->color=(vm->color&0xff000000u)|rgb;
+            }
+            *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(particle)+0x4a4)=duration;
+        }
+    }
+    int active=0;
+    for(int n=0;n<200;++n) {
+        auto* particle=charge.particles[n];
+        if(!particle)continue;
+        if(charge.phase[n]==0) {
+            const Point start=charge_add(source,charge_jitter(150));
+            const Point end=charge_add(middle,charge_jitter(50));
+            const Point direction=charge_normalize(charge_sub(end,start));
+            const Point bend=charge_normalize(charge_add(direction,charge_normalize(charge_sub(center,end))));
+            const Point tangent_end=charge_scale(bend,visual_random()*200+200);
+            const Point tangent_start=charge_scale(direction,visual_random()*100+100);
+            charge_path(particle,duration,start,end,tangent_start,tangent_end);
+            charge.middle[n]=end;charge.tangent[n]=tangent_end;charge.phase[n]=1;
+        } else if(charge.phase[n]==1 && particle->elapsed>=duration+1) {
+            const Point end=charge_add(center,charge_jitter(20));
+            const Point tangent_end=charge_jitter(20);
+            charge_path(particle,duration,charge.middle[n],end,charge.tangent[n],tangent_end);
+            charge.phase[n]=2;
+        }
+        ++active;
+    }
+    if(active==0)return true;
+    charge.previous=charge.time;
+    charge.fraction+=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
+    charge.time=int(charge.fraction);
+    return false;
+}
+void extra_charge_label(AnmVm* vm,int label) {
+    if(label!=1)return;
+    auto& charge=*static_cast<Charge*>(vm->callback_object);
+    charge.previous=charge.time;
+    charge.fraction+=300*(stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale);
+    charge.time=int(charge.fraction);
+}
+void extra_charge_free(AnmVm* vm) {
+    auto* charge=static_cast<Charge*>(vm->callback_object);
+    for(auto* particle:charge->particles)if(particle) {
+        // 4058c0 marks particles deleted; the ANM pass reclaims them later.
+        particle->script_cursor=-1;particle->flags2&=~1u;
+        anm_manage_vm(particle,nullptr);
+    }
+    delete charge;vm->callback_object=nullptr;vm->callback_index=0;
+}
 
 void extra_aura_free(stage::Enemy& enemy) {
     for(auto it=auras.begin();it!=auras.end();++it)if(it->enemy==&enemy){auras.erase(it);break;}

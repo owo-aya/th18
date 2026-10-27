@@ -158,7 +158,6 @@ struct Enemy {
     EnemyInterrupt interrupts[8];
     int32_t phase_time;
     float phase_fraction;
-    int32_t damage_wait;
     const char* pending_sub;
     int32_t special_callback;
 };
