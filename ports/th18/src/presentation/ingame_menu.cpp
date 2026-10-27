@@ -22,6 +22,11 @@ enum class MenuStep { Closed, Opening, Main, Confirm, ConfirmClosing,
                       SaveOpening, Saving, Ranking, PageOpening, Page, Closing };
 constexpr char kCharacters[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-=.,!?@:;[]()_/{}|~^#$%&*   ";
+// 4b4190, indexed by the stored result byte (not just a numbered stage).
+constexpr const char* kStageResults[] = {
+    "test   ", "Stage 1", "Stage 2", "Stage 3", "Stage 4", "Stage 5", "Stage 6",
+    "Extra  ", "Clear  ", "ExClear"
+};
 constexpr int kChoiceChildren[7][5] = {
     {0, 0, 0, 0, 0},
     {0x78, 0x7f, 0x86, 0x8a, 0x8c},
@@ -217,8 +222,13 @@ void update_ranking_name(IngameMenu* menu, const FrameInput& input) {
     if (movement & ACTION_RIGHT)
         menu->character += menu->character % 13 == 12 ? -12 : 1;
     if (old != menu->character) sound_play_se(10);
-    if (input.pressed & (ACTION_BOMB | ACTION_MENU_CANCEL)) erase_name(menu);
-    if ((input.pressed & (ACTION_SHOT | ACTION_MENU_OK)) == 0) return;
+    if ((input.pressed & (ACTION_SHOT | ACTION_MENU_OK)) == 0) {
+        if (input.pressed & (ACTION_BOMB | ACTION_MENU_CANCEL)) {
+            if (menu->name_length == 0) sound_play_se(9);
+            else erase_name(menu);
+        }
+        return;
+    }
     if (menu->character == 89) {
         erase_name(menu);
         return;
@@ -250,6 +260,17 @@ void draw_text(float x, float y, uint32_t color, const char* text) {
 
 void render_ranking(const IngameMenu* menu) {
     draw_text(48, 64, 0xffffffffu, "            Score Ranking!!");
+    // 458090 calls 457bf0 before the rows; the new record's name is blank
+    // until confirmation, so only this editable name occupies its column.
+    draw_text(75, 96.0f + menu->ranking_index * 18.0f, 0xffffffffu, menu->name);
+    draw_text(75 + 9.0f * (menu->name_length == 8 ? 7 : menu->name_length),
+              96.0f + menu->ranking_index * 18.0f, 0xffffff00u, "_");
+    for (int cell = 0; cell < 91; ++cell) {
+        char letter[2] = {cell < 88 ? kCharacters[cell] :
+                         static_cast<char>(cell == 88 ? 0x81 : cell == 89 ? 0x7f : 0x80), 0};
+        draw_text(112.0f + (cell % 13) * 18.0f, 320.0f + (cell / 13) * 16.0f,
+                  cell == menu->character ? 0xffffff00u : 0xff808080u, letter);
+    }
     char line[128];
     for (int rank = 0; rank < 10; ++rank) {
         const uint8_t* record = score_data().character[session().player] + 0x10 +
@@ -265,20 +286,12 @@ void render_ranking(const IngameMenu* menu) {
             std::snprintf(date, sizeof(date), "%02d/%02d/%02d", utc->tm_year % 100,
                           utc->tm_mon + 1, utc->tm_mday);
         }
-        std::snprintf(line, sizeof(line), "%2d %.8s %9u%d %s Stage %d", rank + 1,
+        std::snprintf(line, sizeof(line), "%2d %.8s %9u%d %s %s", rank + 1,
                       reinterpret_cast<const char*>(record + 6), score,
-                      static_cast<int>(record[5]), date, static_cast<int>(record[4]));
+                      static_cast<int>(record[5]), date,
+                      timestamp == 0 ? "Stage -" : kStageResults[record[4]]);
         draw_text(48, 96.0f + rank * 18.0f,
                   rank == menu->ranking_index ? 0xffffff00u : 0xff808080u, line);
-    }
-    draw_text(75, 96.0f + menu->ranking_index * 18.0f, 0xffffffffu, menu->name);
-    draw_text(75 + 9.0f * (menu->name_length == 8 ? 7 : menu->name_length),
-              96.0f + menu->ranking_index * 18.0f, 0xffffff00u, "_");
-    for (int cell = 0; cell < 91; ++cell) {
-        char letter[2] = {cell < 88 ? kCharacters[cell] :
-                         static_cast<char>(cell == 88 ? 0x81 : cell == 89 ? 0x7f : 0x80), 0};
-        draw_text(112.0f + (cell % 13) * 18.0f, 320.0f + (cell / 13) * 16.0f,
-                  cell == menu->character ? 0xffffff00u : 0xff808080u, letter);
     }
 }
 } // namespace
@@ -360,7 +373,7 @@ IngameMenuAction ingame_menu_update(IngameMenu* menu) {
                     static_cast<int>(session().difficulty), g_status.score,
                     session().stage, g_status.continues, std::time(nullptr),
                     static_cast<uint32_t>(replay_info().slow_rate),
-                    reinterpret_cast<const char*>(score_data().state + 0xc));
+                    "        "); // 457870 stores a blank name until entry is confirmed.
             if (menu->reason == IngameMenuReason::GameOver && session().mode == GameMode::Full &&
                 menu->ranking_index >= 0)
                 begin_ranking(menu);
@@ -503,13 +516,15 @@ void ingame_menu_render(IngameMenu* menu) {
     text_set_alignment(1, 1);
     text_set_style(0);
     text_set_size(1.0f, 1.0f);
+    text_set_shadow(true); // 458090 enables this for its entire draw callback.
     if (menu->step == MenuStep::Saving) replay_menu_render(menu->replay);
     else if (menu->step == MenuStep::Ranking) render_ranking(menu);
-    else if (menu->reason == IngameMenuReason::GameOver && session().mode != GameMode::SpellPractice &&
+    if (menu->reason == IngameMenuReason::GameOver && session().mode != GameMode::SpellPractice &&
              ((menu->step != MenuStep::PageOpening && menu->step != MenuStep::Page) || menu->selection == 3)) {
         char credit[32];
         std::snprintf(credit, sizeof(credit), "Credit %d", menu->credits);
         draw_text(184, 448, 0xffffffffu, credit);
     }
     text_set_color(0xffffffffu);
+    text_set_shadow(false);
 }

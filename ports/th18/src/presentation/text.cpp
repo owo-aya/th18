@@ -162,7 +162,7 @@ TextManager* text_create() {
     store<float>(base, kSizeXOffset, 1.0f);
     store<float>(base, kSizeYOffset, 1.0f);
     store<float>(base, kSizeZOffset, 1.0f);
-    store<float>(base, kAuxOffset, 1.0f);
+    store<uint32_t>(base, kAuxOffset, 0); // 419390: drop shadow defaults to off.
     store<int32_t>(base, kFrameOffset, 1);
     store<int32_t>(base, kFrameOffset + 4, 1);
 
@@ -358,6 +358,13 @@ void text_render(TextManager* text, uint32_t group) {
         if (scale_y <= 0.0f) {
             scale_y = 1.0f;
         }
+        // 419390/41a2b0: style 0 uses native 640-space scale, a 14px
+        // glyph and a separate 9px advance. Positions are already doubled.
+        const bool ascii = item->style == 0;
+        if (ascii) {
+            scale_x *= 2.0f;
+            scale_y *= 2.0f;
+        }
         float x = item->x;
         float y = item->y;
         float width = 0.0f;
@@ -367,7 +374,7 @@ void text_render(TextManager* text, uint32_t group) {
             // 41a2b0 subtracts 12/4 for alignment, then advances by +12/+4.
             // The comma's -4 alignment delta is not a negative glyph width.
             width += numeric ? (*p == ',' ? 4.0f : 12.0f) * scale_x
-                             : vm->sprite_w * scale_x;
+                             : (ascii ? 9.0f : vm->sprite_w) * scale_x;
             height = (numeric ? 16.0f : vm->sprite_h) * scale_y;
         }
         if (item->dirty_130 == 0) x -= width * 0.5f;
@@ -377,13 +384,13 @@ void text_render(TextManager* text, uint32_t group) {
         float numeric_advance = 12.0f * scale_x;
         for (const char* p = item->text; *p != '\0'; ++p) {
             uint8_t c = static_cast<uint8_t>(*p);
-            if (numeric && c == ' ') {
-                x += numeric_advance;
+            if ((numeric || ascii) && c == ' ') {
+                x += numeric ? numeric_advance : 9.0f * scale_x;
                 continue;
             }
             if (c == '\n') {
                 x = item->x;
-                y += 32.0f * scale_y;
+                y += ascii ? 7.0f * scale_y * scale_y : 32.0f * scale_y;
                 continue;
             }
             anm_set_sprite(vm, res, glyph_sprite(item->style, c));
@@ -400,11 +407,26 @@ void text_render(TextManager* text, uint32_t group) {
             vm->flags2 = (vm->flags2 & ~(0x7c000000u | 0x3u)) | (0x08u << 26) | 0x3u;
             // 队列采用 1280 虚拟坐标；字模原始尺寸由投影缩为半尺寸。
             vm->flags3 = (vm->flags3 & ~(0x1c00000u | 0x180u)) | 0x800000u;
-            if (numeric)
-                vm->flags3 = (vm->flags3 & ~0x2000u) | (item->style == 5 ? 0x2000u : 0);
+            // Reset filtering per style; a preceding shadow must not leak its
+            // point filter into another font using this same embedded VM.
+            const bool point = item->style == 3 || item->style == 5 ||
+                (ascii && scale_x != 2.0f) ||
+                (item->style >= 6 && item->style <= 9 && scale_x != 1.0f);
+            vm->flags3 = (vm->flags3 & ~0x2000u) | (point ? 0x2000u : 0);
+            if (item->dirty_124 != 0) {
+                // 41a2b0: black, half-alpha shadow at +2,+2 screen pixels.
+                vm->pos_x += 4.0f;
+                vm->pos_y += 4.0f;
+                vm->color = vm->color_alt = (item->color >> 25) << 24;
+                vm->flags3 = (vm->flags3 & ~0x2000u) | (scale_x == 2.0f ? 0x2000u : 0);
+                anm_draw_vm(vm);
+                vm->pos_x -= 4.0f;
+                vm->pos_y -= 4.0f;
+                vm->color = vm->color_alt = item->color;
+            }
             anm_draw_vm(vm);
             numeric_advance = (c == ',' ? 4.0f : 12.0f) * scale_x;
-            x += numeric ? numeric_advance : vm->sprite_w * scale_x;
+            x += numeric ? numeric_advance : (ascii ? 9.0f : vm->sprite_w) * scale_x;
         }
     }
 }
@@ -433,6 +455,10 @@ void text_set_style(uint32_t style) {
 
 void text_set_secondary_color(uint32_t argb) {
     store<uint32_t>(reinterpret_cast<uint8_t*>(g_text_manager), kColor2Offset, argb);
+}
+
+void text_set_shadow(bool enabled) {
+    store<uint32_t>(reinterpret_cast<uint8_t*>(g_text_manager), kAuxOffset, enabled ? 1u : 0u);
 }
 
 void text_set_alignment(int horizontal, int vertical) {

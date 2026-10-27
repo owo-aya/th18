@@ -141,6 +141,7 @@ void text_format(char* out, const char* fmt, ...);
 //   text_set_style  -> +0x19244 绘制样式（0 普通；6/8、7/9 为大字模）
 void text_set_color(uint32_t argb);
 void text_set_secondary_color(uint32_t argb);
+void text_set_shadow(bool enabled); // +0x19240: black half-alpha shadow at +2,+2.
 void text_set_alignment(int horizontal, int vertical); // 0中、1左/上、2右/下
 void text_set_life(int frames);
 void text_set_size(float scale_x, float scale_y);
