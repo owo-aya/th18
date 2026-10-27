@@ -84,6 +84,7 @@ static ThreadStatus bullets_logic_task(void*) {
 }
 static ThreadStatus bullets_render_task(void*) {
     gfx_select_camera(3);
+    anm_begin_batch();
     for(int bucket=0;bucket<6;++bucket)
         for(auto& bullet:g_enemy_bullets)
             if(bullet.render_bucket==bucket) {
@@ -105,6 +106,7 @@ static ThreadStatus bullets_render_task(void*) {
                 }
                 anm_draw_vm(bullet.vm);
             }
+    anm_end_batch();
     return THREAD_CONTINUE;
 }
 static void bullet_fire(Enemy& self,int slot);
@@ -331,7 +333,6 @@ float arg_float_default(Enemy& self, int32_t index, float def) {
 float arg_float_raw(Enemy& self, int32_t index) { return arg_float(self,index); }
 
 Enemy* create_enemy(const char* sub_name, const SpawnArgs& args) {
-    storage_log("enemy: create %s at %.1f,%.1f", sub_name, args.x, args.y);
     EnemyManager* manager = g_enemy_manager;
     if (manager->max_enemies <= manager->count) return nullptr;
 

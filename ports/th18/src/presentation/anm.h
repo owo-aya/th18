@@ -172,7 +172,14 @@ struct AnmVm {
     void*    node_self;          // +0x574 绘制队列节点
     void*    node_next;          // +0x578
     void*    node_prev;          // +0x57c
-    uint8_t  pad_580[0x3c];      // +0x580
+    AnmVm* independent_prev;    // +0x580 端口独立托管链
+    AnmVm* independent_next;    // +0x584
+    uint32_t independently_managed; // +0x588
+    AnmVm* sibling_prev;        // +0x58c 端口子节点链
+    AnmVm* sibling_next;        // +0x590
+    uint8_t pad_594[4];
+    AnmVm* child_head;          // +0x598 子节点链入口（新子节点头插）
+    uint8_t pad_59c[0x20];
     AnmVm*   root;              // +0x5bc 位置和旋转继承使用的根 VM
     void*    parent;             // +0x5c0 父 VM（绘制时叠加变换）
     void*    callback_object;    // +0x5c4 Bullet/Laser回指；原+0x5fc在本层用作texture
@@ -252,6 +259,9 @@ uint32_t anm_queue_add(AnmVm* vm);
 void anm_queue_remove(uint32_t handle);
 // sub_488260: 绘制某一层。
 void anm_draw_layer(int layer);
+// Consecutive screen sprites only; end/foreign primitive flushes preserve order.
+void anm_begin_batch();
+void anm_end_batch();
 // sub_481210: 绘制单个 VM（按类型分派）。
 void anm_draw_vm(AnmVm* vm);
 // sub_47d910；loading406d00在此之后改独立alpha状态，再画effect194。

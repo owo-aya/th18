@@ -36,26 +36,39 @@ static void update_vm_self(AnmVm* vm);
 namespace {
 
 constexpr int kResourceSlots = 0x200;
-constexpr int kAllocatedVmSlots = 1024;
-AnmVm* g_allocated_vms[kAllocatedVmSlots];
-std::list<AnmVm*> g_independent_vms;
+AnmVm* g_independent_head;
+AnmVm* g_independent_tail;
+
+void unlink_child(AnmVm* vm) {
+    if(vm->parent==nullptr)return;
+    auto* parent=static_cast<AnmVm*>(vm->parent);
+    if(vm->sibling_prev)vm->sibling_prev->sibling_next=vm->sibling_next;
+    else parent->child_head=vm->sibling_next;
+    if(vm->sibling_next)vm->sibling_next->sibling_prev=vm->sibling_prev;
+    vm->sibling_prev=vm->sibling_next=nullptr;vm->parent=nullptr;vm->root=nullptr;
+}
+void unlink_independent(AnmVm* vm) {
+    if(!vm->independently_managed)return;
+    if(vm->independent_prev)vm->independent_prev->independent_next=vm->independent_next;
+    else g_independent_head=vm->independent_next;
+    if(vm->independent_next)vm->independent_next->independent_prev=vm->independent_prev;
+    else g_independent_tail=vm->independent_prev;
+    vm->independent_prev=vm->independent_next=nullptr;vm->independently_managed=0;
+}
 
 bool managed_vm(AnmVm* vm)
 {
     while (vm->parent != nullptr) vm = static_cast<AnmVm*>(vm->parent);
-    return vm->owner_slot != nullptr ||
-           std::find(g_independent_vms.begin(), g_independent_vms.end(), vm) != g_independent_vms.end();
+    return vm->owner_slot != nullptr || vm->independently_managed;
 }
 
 void collect_managed_delete(AnmVm* vm, std::list<AnmVm*>& pending)
 {
     // 488110先标记整个子树；所有节点都要等本pass遍历完才归还。
-    for (AnmVm* child : g_allocated_vms)
-        if (child != nullptr && child->parent == vm) collect_managed_delete(child, pending);
+    while(vm->child_head)collect_managed_delete(vm->child_head,pending);
     if ((vm->flags3 & 0x180u) != 0x100u) pending.push_front(vm);
     vm->flags3 = (vm->flags3 & ~0x80u) | 0x100u;
-    vm->root = nullptr;
-    vm->parent = nullptr;
+    unlink_child(vm);
 }
 
 ThreadStatus update_managed(void* context)
@@ -90,6 +103,53 @@ AnmManager* g_manager = nullptr;
 int g_last_blend = -1;
 float g_screen_w = 1280.0f;
 float g_screen_h = 960.0f;
+
+struct ScreenVertex {float x,y,z,rhw;uint32_t color;float u,v;};
+struct SpriteBatch {
+    bool active=false;
+    const void* texture=nullptr;
+    uint32_t blend=0,sampling=0;
+    std::vector<ScreenVertex> vertices;
+} g_sprite_batch;
+
+void flush_sprite_batch() {
+    auto& batch=g_sprite_batch;
+    if(batch.vertices.empty())return;
+    auto* dev=gfx_device();
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);
+    dev->SetRenderState(D3DRS_LIGHTING,FALSE);
+    dev->SetRenderState(D3DRS_ZENABLE,FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
+    AnmVm state{};state.flags2=batch.blend<<5;
+    anm_apply_blend(&state);
+    dev->SetTexture(0,static_cast<IDirect3DTexture9*>(const_cast<void*>(batch.texture)));
+    dev->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_MODULATE);
+    dev->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TEXTURE);
+    dev->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_MODULATE);
+    dev->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE);
+    dev->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE);
+    const DWORD filter=(batch.sampling&0x2000)?D3DTEXF_POINT:D3DTEXF_LINEAR;
+    dev->SetSamplerState(0,D3DSAMP_MINFILTER,filter);
+    dev->SetSamplerState(0,D3DSAMP_MAGFILTER,filter);
+    const D3DTEXTUREADDRESS address[]={D3DTADDRESS_WRAP,D3DTADDRESS_CLAMP,D3DTADDRESS_MIRROR};
+    const uint32_t address_u=(batch.sampling>>2)&3,address_v=batch.sampling&3;
+    if(address_u<3)dev->SetSamplerState(0,D3DSAMP_ADDRESSU,address[address_u]);
+    if(address_v<3)dev->SetSamplerState(0,D3DSAMP_ADDRESSV,address[address_v]);
+    dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST,UINT(batch.vertices.size()/3),batch.vertices.data(),sizeof(ScreenVertex));
+    batch.vertices.clear();
+}
+
+void append_sprite(AnmVm* vm,const ScreenVertex* vertices) {
+    auto& batch=g_sprite_batch;
+    const uint32_t blend=(vm->flags2>>5)&15,sampling=vm->flags3&0x200fu;
+    // 47dce0/47e800: texture/state boundaries flush, never sort translucent sprites.
+    if(batch.texture!=vm->texture || batch.blend!=blend || batch.sampling!=sampling ||
+       (batch.vertices.size()+6)*sizeof(ScreenVertex)>=0x700000)flush_sprite_batch();
+    batch.texture=vm->texture;batch.blend=blend;batch.sampling=sampling;
+    for(int index:{0,1,2,1,2,3})batch.vertices.push_back(vertices[index]);
+}
 
 ThreadStatus draw_managed(void* context)
 {
@@ -594,6 +654,7 @@ void anm_queue_remove(uint32_t handle)
         vm->node_self = nullptr;
         vm->node_next = nullptr;
         vm->node_prev = nullptr;
+        vm->handle = 0;
         return;
     }
     }
@@ -601,8 +662,12 @@ void anm_queue_remove(uint32_t handle)
 
 // sub_488260：按层号绘制队列中匹配的 VM。
 // 层号换算与原版一致：0x26..0x2d 归一到 0x19..0x20，第一队列其余按原值。
+void anm_begin_batch() {g_sprite_batch.active=true;}
+void anm_end_batch() {flush_sprite_batch();g_sprite_batch.active=false;}
+
 void anm_draw_layer(int layer)
 {
+    anm_begin_batch();
     AnmManager* manager = anm_manager();
     for (int second = 0; second < 2; ++second)
       for (AnmVm* vm = static_cast<AnmVm*>(second ? manager->queue_head2 : manager->queue_head); vm != nullptr; vm = static_cast<AnmVm*>(vm->node_next))
@@ -623,6 +688,7 @@ void anm_draw_layer(int layer)
             continue;
         anm_draw_vm(vm);
       }
+    anm_end_batch();
 }
 
 // sub_481210 / sub_480160：单 VM 绘制。这里统一按 type 8 的精灵绘制路径实现，
@@ -695,9 +761,11 @@ void anm_draw_vm(AnmVm* vm)
         return;
     if ((vm->flags3 & 0x180) != 0)
         return;
-    if(vm->callback_index==7){extra_maple_draw(vm);return;}
+    if(vm->callback_index==7){flush_sprite_batch();extra_maple_draw(vm);return;}
     AnmManager* manager = anm_manager();
     const uint32_t render_type = (vm->flags2 >> 26) & 31;
+    const bool batched=g_sprite_batch.active && render_type<=3;
+    if(!batched)flush_sprite_batch();
     const bool background_3d = render_type == 8 && vm->draw_layer == 2 && stage::g_stage != nullptr;
     const bool primitive = render_type == 0x10 || render_type == 0x11 || render_type == 0x12 || render_type == 0x14 ||
                            render_type == 0x15 || render_type == 0x16 || render_type == 0x1c;
@@ -729,24 +797,26 @@ void anm_draw_vm(AnmVm* vm)
     color = (a << 24) | (r << 16) | (g << 8) | b;
 
     IDirect3DDevice9* dev = gfx_device();
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRS_ZENABLE, background_3d ? TRUE : FALSE);
-    if (background_3d)
-        dev->SetRenderState(D3DRS_ZWRITEENABLE, (vm->flags2 & 0x2000u) == 0);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_TEXTUREFACTOR, color);
+    if(!batched) {
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+        dev->SetRenderState(D3DRS_ZENABLE, background_3d ? TRUE : FALSE);
+        if (background_3d)
+            dev->SetRenderState(D3DRS_ZWRITEENABLE, (vm->flags2 & 0x2000u) == 0);
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_TEXTUREFACTOR, color);
 
-    // sub_47d910：混合由 op303 的 flags2 bit5..8 决定；op313 是坐标缩放。
-    anm_apply_blend(vm);
+        // sub_47d910：混合由 op303 的 flags2 bit5..8 决定；op313 是坐标缩放。
+        anm_apply_blend(vm);
 
-    dev->SetTexture(0, primitive ? nullptr : texture);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, primitive ? D3DTOP_SELECTARG2 : D3DTOP_MODULATE);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, primitive ? D3DTOP_SELECTARG2 : D3DTOP_MODULATE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+        dev->SetTexture(0, primitive ? nullptr : texture);
+        dev->SetTextureStageState(0, D3DTSS_COLOROP, primitive ? D3DTOP_SELECTARG2 : D3DTOP_MODULATE);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, primitive ? D3DTOP_SELECTARG2 : D3DTOP_MODULATE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+    }
 
     // 文字画笔会逐字改位置后立即绘制，因此变换取当前字段，不依赖上次 update 的矩阵。
     D3DMATRIX world{};
@@ -855,7 +925,7 @@ void anm_draw_vm(AnmVm* vm)
             world._21*=parent->scale_extra_y;world._22*=parent->scale_extra_y;
         }
     }
-    set_matrix(dev, D3DTS_WORLD, world);
+    if(!batched)set_matrix(dev, D3DTS_WORLD, world);
 
     const float half_w = vm->sprite_w * 0.5f;
     const float half_h = vm->sprite_h * 0.5f;
@@ -879,21 +949,22 @@ void anm_draw_vm(AnmVm* vm)
         {right, bottom, 0.0f, right_color, u1 + vm->uv_offset_u, v1 + vm->uv_offset_v},
     };
 
-    const DWORD filter = (vm->flags3 & 0x2000) ? D3DTEXF_POINT : D3DTEXF_LINEAR;
-    dev->SetSamplerState(0, D3DSAMP_MINFILTER, filter);
-    dev->SetSamplerState(0, D3DSAMP_MAGFILTER, filter);
-    // 47d910: ANM 312 values 0/1/2 map to D3D wrap/clamp/mirror.
-    const D3DTEXTUREADDRESS address[3] = {D3DTADDRESS_WRAP, D3DTADDRESS_CLAMP, D3DTADDRESS_MIRROR};
-    const uint32_t address_u = (vm->flags3 >> 2) & 3;
-    const uint32_t address_v = vm->flags3 & 3;
-    if (address_u < 3) dev->SetSamplerState(0, D3DSAMP_ADDRESSU, address[address_u]);
-    if (address_v < 3) dev->SetSamplerState(0, D3DSAMP_ADDRESSV, address[address_v]);
+    if(!batched) {
+        const DWORD filter = (vm->flags3 & 0x2000) ? D3DTEXF_POINT : D3DTEXF_LINEAR;
+        dev->SetSamplerState(0, D3DSAMP_MINFILTER, filter);
+        dev->SetSamplerState(0, D3DSAMP_MAGFILTER, filter);
+        // 47d910: ANM 312 values 0/1/2 map to D3D wrap/clamp/mirror.
+        const D3DTEXTUREADDRESS address[3] = {D3DTADDRESS_WRAP, D3DTADDRESS_CLAMP, D3DTADDRESS_MIRROR};
+        const uint32_t address_u = (vm->flags3 >> 2) & 3;
+        const uint32_t address_v = vm->flags3 & 3;
+        if (address_u < 3) dev->SetSamplerState(0, D3DSAMP_ADDRESSU, address[address_u]);
+        if (address_v < 3) dev->SetSamplerState(0, D3DSAMP_ADDRESSV, address[address_v]);
 
-    dev->SetFVF(kFvfSprite);
+        dev->SetFVF(kFvfSprite);
+    }
     if (render_type<=3) {
         // 47dce0 consumes screen vertices, independently of the STD 3D matrices.
         // Type 0 rounds to the D3D9 pixel grid; type 2 deliberately does not.
-        struct ScreenVertex {float x,y,z,rhw;uint32_t color;float u,v;};
         ScreenVertex screen[4];
         float shake_x,shake_y;gfx_get_camera_shake(gfx_current_camera(),shake_x,shake_y);
         for(int i=0;i<4;++i) {
@@ -903,8 +974,11 @@ void anm_draw_vm(AnmVm* vm)
             if(render_type==0){x=std::nearbyint(x)-0.5f;y=std::nearbyint(y)-0.5f;}
             screen[i]={x,y,vm->pos_z+vm->extra_z+offset[2],1,v.color,v.u,v.v};
         }
-        dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);
-        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,screen,sizeof(ScreenVertex));
+        if(batched)append_sprite(vm,screen);
+        else {
+            dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,screen,sizeof(ScreenVertex));
+        }
         ++manager->draw_count;
         return;
     }
@@ -1238,9 +1312,7 @@ void anm_copy_game_region(AnmVm* target)
 void anm_set_label(AnmVm* vm, int label)
 {
     vm->label = label;
-    for (AnmVm* child : g_allocated_vms)
-        if (child != nullptr && child->parent == vm)
-            anm_set_label(child, label);
+    for(AnmVm* child=vm->child_head;child;child=child->sibling_next)anm_set_label(child,label);
 }
 
 void anm_interrupt(AnmVm* vm, int label)
@@ -1249,8 +1321,7 @@ void anm_interrupt(AnmVm* vm, int label)
         // 488c60：根先立即执行，再依次对子VM设置同一label并立即执行。
         vm->label = label;
         update_vm_self(vm);
-        for (AnmVm* child : g_allocated_vms)
-            if (child != nullptr && child->parent == vm) anm_interrupt(child, label);
+        for(AnmVm* child=vm->child_head;child;child=child->sibling_next)anm_interrupt(child,label);
         return;
     }
     anm_set_label(vm, label);
@@ -1259,9 +1330,7 @@ void anm_interrupt(AnmVm* vm, int label)
 
 AnmVm* anm_find_child(AnmVm* vm, int script, int index)
 {
-    for (AnmVm* child : g_allocated_vms) {
-        if (child == nullptr || child->parent != vm)
-            continue;
+    for(AnmVm* child=vm->child_head;child;child=child->sibling_next) {
         if (script == -1 || child->script->id == script) {
             if (index == 0)
                 return child;
@@ -1317,34 +1386,14 @@ void anm_free_vm(AnmVm* vm)
 }
 
 // —— 动态 VM（原版 sub_489320 从管理器池取 / sub_4885d0 归还） ——
-// 原版池是 manager+0xd0c 起、槽步长 0x624 的数组；端口用堆分配 + 登记表，
+// 原版池是 manager+0xd0c 起、槽步长 0x624 的数组；端口用堆分配，
 // 对外语义相同：取一个已重置的 VM、绑定资源下标，用完归还。
-namespace {
-int find_allocated(AnmVm* vm)
-{
-    for (int i = 0; i < kAllocatedVmSlots; ++i)
-    {
-        if (g_allocated_vms[i] == vm)
-            return i;
-    }
-    return -1;
-}
-} // namespace
-
 AnmVm* anm_vm_alloc(AnmResource* res)
 {
     AnmVm* vm = static_cast<AnmVm*>(calloc(1, sizeof(AnmVm)));
     anm_vm_reset(vm);
     vm->anm_index = static_cast<int32_t>(res->index);
     vm->anm_table_index = static_cast<int32_t>(res->index);
-    for (int i = 0; i < kAllocatedVmSlots; ++i)
-    {
-        if (g_allocated_vms[i] == nullptr)
-        {
-            g_allocated_vms[i] = vm;
-            break;
-        }
-    }
     return vm;
 }
 
@@ -1353,24 +1402,33 @@ void anm_manage_vm(AnmVm* vm, AnmVm** owner_slot)
     if (vm->owner_slot != nullptr) *vm->owner_slot = nullptr;
     vm->owner_slot = owner_slot;
     if (owner_slot != nullptr) *owner_slot = vm;
-    g_independent_vms.remove(vm);
-    if (owner_slot == nullptr && vm->parent == nullptr) g_independent_vms.push_back(vm);
+    unlink_independent(vm);
+    if(owner_slot==nullptr && vm->parent==nullptr) {
+        vm->independently_managed=1;vm->independent_prev=g_independent_tail;
+        if(g_independent_tail)g_independent_tail->independent_next=vm;
+        else g_independent_head=vm;
+        g_independent_tail=vm;
+    }
 }
 
 void anm_vm_free(AnmVm* vm)
 {
-    g_independent_vms.remove(vm);
     if (vm == nullptr)
         return;
+    unlink_independent(vm);
     if(vm->callback_index==7)extra_maple_free(vm);
     if (vm->owner_slot != nullptr) *vm->owner_slot = nullptr;
-    for (AnmVm* child : g_allocated_vms)
-        if (child != nullptr && child->parent == vm)
-            anm_vm_free(child);
-    anm_queue_remove(vm->handle);
-    int slot = find_allocated(vm);
-    if (slot >= 0)
-        g_allocated_vms[slot] = nullptr;
+    while(vm->child_head)anm_vm_free(vm->child_head);
+    unlink_child(vm);
+    if(vm->handle!=0) {
+        auto* manager=anm_manager();const bool second=(vm->node_flags&4u)!=0;
+        auto* previous=static_cast<AnmVm*>(vm->node_prev);
+        auto* next=static_cast<AnmVm*>(vm->node_next);
+        if(previous)previous->node_next=next;
+        else (second?manager->queue_head2:manager->queue_head)=next;
+        if(next)next->node_prev=previous;
+        else (second?manager->queue_tail2:manager->queue_tail)=previous;
+    }
     free(vm);
 }
 
@@ -1378,6 +1436,13 @@ void anm_vm_free(AnmVm* vm)
 // slots are port bookkeeping; keep them while clearing script callbacks/parents.
 void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id)
 {
+    // Child ownership was formerly tracked by the allocation table, outside
+    // the script template. Keep it across a template copy just like queue links.
+    AnmVm* child_head=vm->child_head;
+    unlink_child(vm);
+    AnmVm* independent_prev=vm->independent_prev;
+    AnmVm* independent_next=vm->independent_next;
+    const uint32_t independently_managed=vm->independently_managed;
     const float x = vm->extra_x, y = vm->extra_y, z = vm->extra_z;
     const uint32_t handle = vm->handle, mask = vm->handle_mask, queue = vm->node_flags;
     AnmVm* next = vm->queue_next;
@@ -1385,6 +1450,9 @@ void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id)
     void* node_next = vm->node_next;
     void* node_prev = vm->node_prev;
     *vm = *anm_vm_at(res, script_id);
+    vm->child_head=child_head;
+    vm->independent_prev=independent_prev;vm->independent_next=independent_next;
+    vm->independently_managed=independently_managed;
     vm->extra_x = x; vm->extra_y = y; vm->extra_z = z;
     vm->handle = handle; vm->handle_mask = mask;
     vm->node_flags = queue; vm->node_self = vm;
@@ -1980,6 +2048,10 @@ void anm_execute_script(AnmVm* vm)
                 position[1] = float_argument(vm, payload, mask, 2);
             }
             anm_queue_add(child);
+            // 4888f0 links after initial execution, at the head of the parent's list.
+            child->sibling_next=vm->child_head;
+            if(vm->child_head)vm->child_head->sibling_prev=child;
+            vm->child_head=child;
             vm->script_cursor += length;
             break;
         }
@@ -2590,9 +2662,10 @@ void anm_release_resource(int index)
 
 void anm_delete_independent(int resource_index)
 {
-    for (auto it = g_independent_vms.begin(); it != g_independent_vms.end();) {
-        AnmVm* vm = *it++;
+    for(AnmVm* vm=g_independent_head;vm;) {
+        AnmVm* next=vm->independent_next;
         if (vm->anm_index == resource_index || vm->anm_table_index == resource_index) anm_vm_free(vm);
+        vm=next;
     }
 }
 
@@ -2603,12 +2676,13 @@ void anm_vm_update(AnmVm* vm)
 {
     // owner推进的嵌入对象仍持整树；原托管VM的子节点各由自己的A22/A0b队列推进。
     if (!managed_vm(vm)) {
-        for (AnmVm* child : g_allocated_vms)
-            if (child != nullptr && child->parent == vm) {
-                anm_vm_update(child);
-                if (child->script_cursor < 0 && (child->flags2 & 1u) == 0)
-                    anm_vm_free(child);
-            }
+        for(AnmVm* child=vm->child_head;child;) {
+            AnmVm* next=child->sibling_next;
+            anm_vm_update(child);
+            if (child->script_cursor < 0 && (child->flags2 & 1u) == 0)
+                anm_vm_free(child);
+            child=next;
+        }
     }
     update_vm_self(vm);
 }

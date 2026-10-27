@@ -289,13 +289,6 @@ int platform_run(HINSTANCE hinst) {
                 continue;
             }
             uint32_t raw_bits = input_sample_device();
-            {
-                static uint32_t last_bits = 0;
-                if (raw_bits != last_bits) {
-                    storage_log("input raw=0x%x", raw_bits);
-                    last_bits = raw_bits;
-                }
-            }
             input_update(raw_bits);
             frame_update(input_frame());
             int32_t rc = thread_run_logic();
