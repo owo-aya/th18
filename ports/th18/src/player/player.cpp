@@ -443,7 +443,7 @@ int32_t player_init_from_sht(Player* p) {
     for (int32_t i = 0; i < 0x400; ++i) {
         put_i32(p, 0x1574 + i * 0xf8, i);
     }
-    // 位置初值：x=0、y=400（入场从画面下方进入）。
+    // 45a7a0 的构造位置；正式开局由 45abb0 切到正常状态，复活另走 state 0。
     p->x_sub = 0;
     p->y_sub = 0xc800;
     p->x = 0.0f;
@@ -1624,6 +1624,45 @@ void player_render_update(Player* p) {
     vm->extra_z = p->z;
     vm->flags3 = (vm->flags3 | 0x100000u) & ~0x200000u;
     anm_draw_vm(vm);
+}
+
+void player_stage_start() {
+    // 443e60 / 4443c0 -> 45abb0: stage entry is not the death respawn state.
+    // Keep the constructor/replay position; only a confirmed death moves it
+    // to Y=480 and starts the state-0 ascent.
+    Player* p=g_player;
+    p->state=1;
+    for(int offset:{0x476d0,0x476e4,0x634,0x648,0x65c,0x47914}) {
+        const int frame=(offset==0x476d0 || offset==0x476e4)?-1:0;
+        if((get_i32(p,offset+16)&1)==0) {
+            put_i32(p,offset+12,0);put_i32(p,offset+16,get_i32(p,offset+16)|1);
+        }
+        put_i32(p,offset,frame-1);put_i32(p,offset+4,frame);put_f32(p,offset+8,float(frame));
+    }
+    p->flags_4779c&=~9u;
+    anm_queue_remove(p->focus_handle);p->focus_handle=0;
+    anm_queue_remove(p->handle_476b4);p->handle_476b4=0;
+    stage::hud_refresh_lives();stage::hud_refresh_bombs();
+    // 416d50 schedules label 2 without advancing the option animations here.
+    p->flags_4779c&=~2u;p->follow_stun=0;
+    for(int i=0;i<4;++i)for(AnmVm* vm:{g_option_vm[i],g_option_max_vm[i]})if(vm)anm_set_label(vm,2);
+    for(int i=0;i<12;++i)for(int j=0;j<2;++j) {
+        AnmVm* vm=*reinterpret_cast<AnmVm**>(reinterpret_cast<uint8_t*>(p)+0xae0+i*0xf0+j*4);
+        if(vm)anm_set_label(vm,2);
+    }
+    player_refresh_power_options();
+    p->flags_4779c&=~4u;p->move_scale=1;
+    std::memset(p->unk_476fc,0,sizeof(p->unk_476fc));
+    for(int offset:{0x479bc,0x479c0,0x479c4,0x20570,0x47974})put_i32(p,offset,0);
+    p->invuln_alpha=1;put_f32(p,0x47980,1);
+    for(auto& point:p->trail){point[0]=p->x_sub;point[1]=p->y_sub;}
+    p->respawn_wait=8;p->shot_angle=-1.57079637f;p->shot_offset=0;
+    for(int i=0;i<4;++i)put_i32(p,0x477b4+i*4,
+        int32_t(*reinterpret_cast<float*>(static_cast<uint8_t*>(p->sht)+0x10+i*4)*128.0f));
+    const float parameters[]={5,30,70,70,128,3,3,1.5f,1.5f,5,1.5f,1.5f,5};
+    for(int i=0;i<13;++i)put_f32(p,0x47988+i*4,parameters[i]);
+    // The same native slot-8 callbacks used at shop exit reapply card overrides.
+    card_manager_shop_exit();
 }
 
 void player_system_init(uint32_t difficulty, uint32_t stage,bool new_run) {

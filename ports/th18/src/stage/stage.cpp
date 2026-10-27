@@ -717,6 +717,7 @@ void stage_session_load(StageSession* s) {
     g_stage_transfer=false;g_stage_loaded=true;s->flags&=~4u;
 }
 void stage_session_start(StageSession* s) {
+    player_stage_start();
     replay_start_stage();stage::SpawnArgs main_args{};stage::create_enemy("main",main_args);
     // 443e60 still enters "main"; ECL -9907 routes to the chosen spell.
     if(g_status.spell_id < 0)bgm_play(session().stage==7?15:(session().stage-1)*2+1);

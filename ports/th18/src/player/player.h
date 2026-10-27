@@ -104,7 +104,7 @@ struct Player {
     //   0x20570 子弹池游标，0x20574 起 0x400×0x9C 自机子弹（FUN_0045de40 分配，FUN_0045be90 更新）
     // 两者在原版内存上重叠，按原版直接按偏移访问，不展开成独立成员。
     uint8_t shot_area[0x4613c];  // +0x1570..+0x476ab
-    int32_t state;               // +0x476ac 0 入场 / 1 通常 / 2 死亡 / 3 消弹 / 4 决死窗口
+    int32_t state;               // +0x476ac 0 死亡复活上升 / 1 通常 / 2 死亡 / 3 消弹 / 4 决死窗口
     int32_t focus_handle;        // +0x476b0 聚焦高亮 ANM 句柄
     int32_t handle_476b4;        // +0x476b4 拖尾/受击表现句柄
     int32_t handle_476b8;        // +0x476b8 上一次 0x476bc
@@ -267,6 +267,7 @@ void player_shot_area_init(Player* p);   // FUN_0045a690（参数为 p+0x620 的
 //   difficulty = DAT_004ccd00，stage = DAT_004cccdc；角色/机种由菜单设置
 //   g_player_character / g_player_shot_type。
 void player_system_init(uint32_t difficulty, uint32_t stage,bool new_run);
+void player_stage_start(); // 45abb0：正式开局的自机重置，先于 main ECL 与首帧移动
 void player_system_shutdown();
 
 // 帧更新。
