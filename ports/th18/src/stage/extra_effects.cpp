@@ -56,8 +56,9 @@ ThreadStatus draw_auras(void*) {
     // 455530 renders layer35 at B0x0f, after the background has been drawn.
     IDirect3DSurface9* surface;
     aura_texture->GetSurfaceLevel(0,&surface);
-    const RECT rectangle{32,16,415,463};
-    gfx_copy_game_surface(surface,rectangle);surface->Release();
+    // 455d80 uses text66's @R texture. The pause-copy rectangle excludes
+    // its right/bottom texels, but 42f890 can sample those edge texels.
+    gfx_copy_scene_surface(surface);surface->Release();
     auto* device=gfx_device();gfx_select_camera(3);
     texture_state(device);device->SetTexture(0,aura_texture);
     device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);
@@ -67,10 +68,18 @@ ThreadStatus draw_auras(void*) {
     device->SetRenderState(D3DRS_ZENABLE,FALSE);
     device->SetRenderState(D3DRS_FOGENABLE,FALSE);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);
-    device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_ONE);
-    device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_ZERO);
+    // 42b1f0 overrides text66's copy blend (3) with normal alpha blend (0).
+    // The zero-alpha vertices outside the circle must preserve the background.
+    device->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);
+    device->SetRenderState(D3DRS_DESTBLEND,D3DBLEND_INVSRCALPHA);
     device->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);
-    device->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE);
+    device->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE);
+    device->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER);
+    device->SetRenderState(D3DRS_ALPHAREF,0);
+    device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE,TRUE);
+    device->SetRenderState(D3DRS_SRCBLENDALPHA,D3DBLEND_ONE);
+    device->SetRenderState(D3DRS_DESTBLENDALPHA,D3DBLEND_ZERO);
+    device->SetRenderState(D3DRS_BLENDOPALPHA,D3DBLENDOP_ADD);
     device->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);
     // 42b540 copies adjacent columns into sixteen 34-vertex strips.
     for(const auto& aura:auras)for(int x=0;x<16;++x) {
@@ -166,7 +175,8 @@ void extra_aura_set(stage::Enemy& enemy,float radius,uint32_t color) {
     extra_aura_free(enemy);
     if(radius<=0)return;
     if(aura_texture==nullptr)gfx_device()->CreateTexture(640,480,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&aura_texture,nullptr);
-    auras.push_front(Aura{});auto& aura=auras.front();aura.enemy=&enemy;aura.target=radius;aura.radius=16;aura.color=color;
+    // 42b1f0 appends each new aura's strips to the ANM draw queue.
+    auras.push_back(Aura{});auto& aura=auras.back();aura.enemy=&enemy;aura.target=radius;aura.radius=16;aura.color=color;
 }
 void extra_aura_update(stage::Enemy& enemy) {
     for(auto& aura:auras)if(aura.enemy==&enemy) {
@@ -181,7 +191,10 @@ void extra_aura_update(stage::Enemy& enemy) {
             float px=sx,py=sy;uint32_t color=0xffffff;
             if(distance<=radius*radius) {
                 const float ratio=(radius*radius-distance)/(radius*radius);
-                const float length=std::sqrt(distance),normal_x=length==0?0:dx/length,normal_y=length==0?0:dy/length;
+                // 42f890 tests the XY radius, then normalizes the 3D delta
+                // from the source grid (Z=0) to the enemy's world position.
+                const float length=std::sqrt(distance+enemy.z*enemy.z);
+                const float normal_x=length==0?0:dx/length,normal_y=length==0?0:dy/length;
                 px+=normal_x*ratio*32+std::sin(phase_x)*ratio*8;
                 py+=normal_y*ratio*32+std::sin(phase_y)*ratio*8;
                 color=0xff000000;

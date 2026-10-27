@@ -194,6 +194,10 @@ void gfx_copy_game_surface(IDirect3DSurface9* destination, const RECT& rectangle
     g_load_surface(destination, nullptr, &rectangle, g_scene_surface, nullptr, &source, 2, 0);
 }
 
+void gfx_copy_scene_surface(IDirect3DSurface9* destination) {
+    g_load_surface(destination, nullptr, nullptr, g_scene_surface, nullptr, nullptr, 1, 0);
+}
+
 IDirect3DDevice9* gfx_device() {
     return g_dev;
 }
