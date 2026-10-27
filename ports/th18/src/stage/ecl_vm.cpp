@@ -728,6 +728,9 @@ void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin
         std::memcpy(b.extras,raw+0x28,sizeof(b.extras));b.vx=std::cos(angle)*speed;b.vy=std::sin(angle)*speed;
         anm_vm_bind_script(vm,g_bullet_anm,def.script);
         vm->callback_object=&b;vm->sprite_callback=1;
+        // 424fe0: embedded bullet VMs use playfield coordinates even when
+        // their ANM script does not select a draw layer (304).
+        vm->flags3=(vm->flags3&~0x200000u)|0x100000u;
         if(b.extras[b.cursor].type==2) {
             const int label=b.extras[b.cursor++].i[0];
             b.appearing=true;b.x-=b.vx*4;b.y-=b.vy*4;
@@ -996,7 +999,13 @@ static void bullet_extra_start(EnemyBullet& b) {
         case 0x100:b.effect_flags|=0x100;break;
         case 0x200: {
             b.type=x.i[0];b.color=x.i[1]&0x7fff;const auto& def=kBulletTypes[b.type];b.radius=def.radius;b.render_bucket=bullet_render_buckets[b.type];
-            anm_vm_set_script(b.vm,g_bullet_anm,def.script);anm_interrupt(b.vm,(x.i[1]&0x8000)?2:8);break;
+            // 425c60 ET200 reloads the template and restores the same
+            // coordinate mode as creation, before the next ANM update.
+            anm_vm_bind_script(b.vm,g_bullet_anm,def.script);
+            b.vm->callback_object=&b;b.vm->sprite_callback=1;
+            b.vm->flags3=(b.vm->flags3&~0x200000u)|0x100000u;
+            if(x.i[1]&0x8000)anm_set_label(b.vm,2);
+            break;
         }
         case 0x400:bullet_cancel(b,0);break;
         case 0x800:sound_play_se_at(x.i[0],b.x);break;
