@@ -20,8 +20,8 @@ struct CardInfo {
     int32_t unk_20;      // +0x20 0/1
     int32_t unk_24;      // +0x24 0/1
     int32_t unk_28;      // +0x28 0/1
-    int32_t text_name;   // +0x2c 递增 2 的文本 id（4,6,8,...,0x74）
-    int32_t text_desc;   // +0x30 上一项 +1（5,7,9,...,0x75）
+    int32_t text_name;   // +0x2c abcard.anm 大图 sprite（*_max，通常 256x320）；不是文本 id
+    int32_t text_desc;   // +0x30 abcard.anm 小图 sprite（*_min，64x80）；409310 掉落卡牌使用此项
 };
 
 extern const CardInfo g_card_info[kCardIdCount];

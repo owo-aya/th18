@@ -335,7 +335,8 @@ void spawn_item(int32_t kind,const float* position,float angle,float speed,int32
             p.indicator.flags2&=~1u;p.indicator.script_cursor=-1;
             p.card=anm_vm_alloc(cards);anm_vm_bind_script(p.card,cards,14);
             p.card->flags3|=0x1000u;anm_vm_update(p.card);
-            anm_set_sprite(anm_find_child(p.card,15),cards,card_info_by_id(item_scripts[p.kind][0])->text_name);
+            // 409310 reads CardInfo+30: the 64x80 icon, not the 256x320 preview at +2c.
+            anm_set_sprite(anm_find_child(p.card,15),cards,card_info_by_id(item_scripts[p.kind][0])->text_desc);
             p.card->extra_x=p.x;p.card->extra_y=p.y;p.card->extra_z=p.z;p.card->color=0xffffffff;
             anm_queue_add(p.card);anm_manage_vm(p.card,&p.card);
         } else {
