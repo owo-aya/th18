@@ -82,6 +82,7 @@ TextItem* item_at(uint8_t* base, int32_t index) {
 int glyph_sprite(uint32_t style, uint8_t c) {
     switch (style) {
     case 4:
+    case 5:
     case 10:
     case 11: {
         const int base = style == 10 ? 0x10d : (style == 11 ? 0xfe : 0xef);
@@ -347,6 +348,8 @@ void text_render(TextManager* text, uint32_t group) {
     for (int32_t i = 0; i < count; ++i) {
         TextItem* item = &queue[i];
         if (item->dirty_128 != group) continue;
+        const bool numeric = item->style == 4 || item->style == 5 ||
+                             item->style == 10 || item->style == 11;
         float scale_x = item->dirty_110;
         float scale_y = item->dirty_114;
         if (scale_x <= 0.0f) {
@@ -361,19 +364,21 @@ void text_render(TextManager* text, uint32_t group) {
         float height = 0.0f;
         for (const char* p = item->text; *p != '\0'; ++p) {
             anm_set_sprite(vm, res, glyph_sprite(item->style, static_cast<uint8_t>(*p)));
-            width += (item->style == 4 || item->style == 10 || item->style == 11)
-                ? (*p == ',' ? -4.0f : 12.0f) * scale_x : vm->sprite_w * scale_x;
-            height = vm->sprite_h * scale_y;
+            // 41a2b0 subtracts 12/4 for alignment, then advances by +12/+4.
+            // The comma's -4 alignment delta is not a negative glyph width.
+            width += numeric ? (*p == ',' ? 4.0f : 12.0f) * scale_x
+                             : vm->sprite_w * scale_x;
+            height = (numeric ? 16.0f : vm->sprite_h) * scale_y;
         }
         if (item->dirty_130 == 0) x -= width * 0.5f;
         if (item->dirty_130 == 2) x -= width;
         if (item->dirty_134 == 0) y -= height * 0.5f;
         if (item->dirty_134 == 2) y -= height;
+        float numeric_advance = 12.0f * scale_x;
         for (const char* p = item->text; *p != '\0'; ++p) {
             uint8_t c = static_cast<uint8_t>(*p);
-            const bool numeric = item->style == 4 || item->style == 10 || item->style == 11;
             if (numeric && c == ' ') {
-                x += 12.0f * scale_x;
+                x += numeric_advance;
                 continue;
             }
             if (c == '\n') {
@@ -383,8 +388,10 @@ void text_render(TextManager* text, uint32_t group) {
             }
             anm_set_sprite(vm, res, glyph_sprite(item->style, c));
             vm->pos_x = x + vm->sprite_w * scale_x * 0.5f;
-            vm->pos_y = y + vm->sprite_h * scale_y * 0.5f +
-                (numeric && c == ',' ? 3.0f * scale_y : 0.0f);
+            // Native numeric glyphs reset Y to the item's baseline; commas
+            // add 3 screen pixels, independent of glyph scale (6 in our canvas).
+            vm->pos_y = (numeric ? item->y : y) + vm->sprite_h * scale_y * 0.5f +
+                (numeric && c == ',' ? 6.0f : 0.0f);
             vm->pos_z = item->z;
             vm->scale_x = scale_x;
             vm->scale_y = scale_y;
@@ -393,8 +400,11 @@ void text_render(TextManager* text, uint32_t group) {
             vm->flags2 = (vm->flags2 & ~(0x7c000000u | 0x3u)) | (0x08u << 26) | 0x3u;
             // 队列采用 1280 虚拟坐标；字模原始尺寸由投影缩为半尺寸。
             vm->flags3 = (vm->flags3 & ~(0x1c00000u | 0x180u)) | 0x800000u;
+            if (numeric)
+                vm->flags3 = (vm->flags3 & ~0x2000u) | (item->style == 5 ? 0x2000u : 0);
             anm_draw_vm(vm);
-            x += numeric ? (c == ',' ? -4.0f : 12.0f) * scale_x : vm->sprite_w * scale_x;
+            numeric_advance = (c == ',' ? 4.0f : 12.0f) * scale_x;
+            x += numeric ? numeric_advance : vm->sprite_w * scale_x;
         }
     }
 }
