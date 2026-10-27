@@ -40,7 +40,7 @@ struct AnmResource {
     uint8_t  pad_004[8];         // +0x004 未用填充（原版 name 在 +0x00c）
     uint8_t  name[0xfc];         // +0x00c 名字缓冲区（FUN_0041b310 sprintf）
     uint8_t* file_data;          // +0x108 整份 ANM 文件数据
-    uint8_t* vms;                // +0x10c 每 sprite 一个 VM，0x60c 字节/个
+    uint8_t* vms;                // +0x10c 按脚本 ID 索引的初始 VM 模板
     uint32_t segment_count;      // +0x110
     uint32_t sprite_count;       // +0x114
     uint32_t script_count;       // +0x118
@@ -298,7 +298,7 @@ void anm_free_vm(AnmVm* vm);
 uint32_t anm_vm_get_var(AnmVm* vm, uint32_t id);
 uint32_t* anm_vm_var_ptr(AnmVm* vm, uint32_t* id, uint8_t mask);
 
-// 资源里第 index 个 VM（每 sprite 一个，步长 sizeof(AnmVm)）。
+// 资源里脚本 index 的 VM 模板。
 inline AnmVm* anm_vm_at(AnmResource* res, int index)
 {
     return reinterpret_cast<AnmVm*>(res->vms) + index;
@@ -315,7 +315,7 @@ void anm_manage_vm(AnmVm* vm, AnmVm** owner_slot);
 // sub_407420: 设脚本号：vm->script 指向资源脚本表第 script_id 项，游标与时间归零，
 // 并置 flags2 bit0（允许绘制）。脚本表项由 op300（anm_set_sprite）写 UV/尺寸。
 void anm_vm_set_script(AnmVm* vm, AnmResource* res, int script_id);
-// 先载入-1静态初始化，保留第0帧/appearance给Bullet的ETEX创建序列。
+// 407420：复制执行过-1帧的模板，清除旧脚本状态，第0帧由调用者推进。
 void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id);
 // 原458480→487580：取text59当前精灵区域，复制场景游戏区并将alpha置255。
 void anm_copy_game_region(AnmVm* target);

@@ -83,13 +83,15 @@ CardOption* create_option(AbilityCard* card, int y, int script) {
 
     AnmResource* ability = card_manager_ability();
     option->vm = anm_vm_alloc(ability);
-    anm_vm_set_script(option->vm, ability, script);
+    anm_vm_bind_script(option->vm, ability, script);
     option->vm->draw_layer = 14;
     option->vm->flags3 = (option->vm->flags3 & ~0x200000u) | 0x101000u;
+    anm_vm_update(option->vm);
     option->vm->extra_x = 224.0f;
-    option->vm->extra_y = -983.0f;
+    option->vm->extra_y = -984.0f;
     option->vm->extra_z = 0.0f;
     card->unk_1c = static_cast<int32_t>(anm_queue_add(option->vm));
+    anm_manage_vm(option->vm, &option->vm);
     return option;
 }
 
@@ -232,11 +234,6 @@ void move_option(CardOption* option, CardId id) {
 void advance_visual(CardOption* option) {
     if (option == nullptr || option->vm == nullptr) return;
     death_animation(option);
-    anm_vm_update(option->vm);
-    if (option->vm->script_cursor < 0 && (option->vm->flags2 & 1u) == 0) {
-        anm_vm_free(option->vm);
-        option->vm = nullptr;
-    }
 }
 
 // 0040a9c0: card shots use the current character's SHT and ability.anm.

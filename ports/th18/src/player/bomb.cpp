@@ -367,7 +367,7 @@ static void start_bomb() {
     if (spell_active_after_grace()) g_spell_penalty = true;
     spell_on_sun_card();
     g_enhanced = card_manager_owned(MagicScroll);
-    if (AbilityCard* card = card_manager_find(Mukade)) card_passive_set_value(card, 0);
+    card_passive_clear_damage_events();
     ++stage::g_enemy_manager->field40;
     stage::g_enemy_manager->field44 = 0;
     g_time = 0;
@@ -419,4 +419,5 @@ bool bomb_activate_from_card() {
 }
 
 bool bomb_active() { return g_active; }
+int bomb_elapsed_frames() { return g_timer; }
 void bomb_set_card_active(bool active) { g_card_active = active; }

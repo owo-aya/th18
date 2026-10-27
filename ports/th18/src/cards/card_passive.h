@@ -21,6 +21,7 @@ void card_passive_detach_player(AbilityCard* card);
 
 // Original 0042ed40 increments this once for each nonzero enemy damage event.
 void card_passive_damage_event();
+void card_passive_clear_damage_events(); // DAT_004cf2d4, confirmed death / Bomb
 // MUKADE's original virtual slots 14/15 store the shared damage-event counter.
 void card_passive_set_value(AbilityCard* card, int32_t value);
 int32_t card_passive_value(AbilityCard* card);

@@ -104,7 +104,7 @@ struct Player {
     //   0x20570 子弹池游标，0x20574 起 0x400×0x9C 自机子弹（FUN_0045de40 分配，FUN_0045be90 更新）
     // 两者在原版内存上重叠，按原版直接按偏移访问，不展开成独立成员。
     uint8_t shot_area[0x4613c];  // +0x1570..+0x476ab
-    int32_t state;               // +0x476ac 0 入场 / 1 通常 / 2 死亡 / 3 消弹 / 4 复活
+    int32_t state;               // +0x476ac 0 入场 / 1 通常 / 2 死亡 / 3 消弹 / 4 决死窗口
     int32_t focus_handle;        // +0x476b0 聚焦高亮 ANM 句柄
     int32_t handle_476b4;        // +0x476b4 拖尾/受击表现句柄
     int32_t handle_476b8;        // +0x476b8 上一次 0x476bc
@@ -125,7 +125,7 @@ struct Player {
     uint32_t flags_476f4;        // +0x476f4 bit0
     int32_t unk_476f8;           // +0x476f8
     uint8_t unk_476fc[0x78];     // +0x476fc..+0x47773
-    int32_t anim_id;             // +0x47774 当前动画编号（-1 = 无）
+    int32_t anim_id;             // +0x47774 无敌计时器上一帧值
     int32_t invuln;              // +0x47778 无敌剩余帧
     float invuln_value;          // +0x4777c 无敌闪烁计数（初始 1.0）
     uint32_t flags_47780;        // +0x47780 一次性标记
@@ -156,17 +156,17 @@ struct Player {
     int32_t follow_factor;       // +0x477e4 子机跟随系数（0x1e = 立即跟随）
     int32_t follow_stun;         // +0x477e8 受击后子机跟随恢复计数
     float move_scale;            // +0x477ec 移动倍率（初始 1.0）
-    float shake_x;               // +0x477f0 屏幕震动（来自 DAT_005217dc）
+    float shake_x;               // +0x477f0 移动附加量，每帧归零（DAT_005217dc）
     float shake_y;               // +0x477f4
     float shake_z;               // +0x477f8
     uint8_t unk_477fc[4];        // +0x477fc
     int32_t trail[33][2];        // +0x47800 历史位置（[0] 为当前位置，移动时整体后移）
-    int32_t respawn_wait;        // +0x47908 复活等待帧阈值
+    int32_t respawn_wait;        // +0x47908 决死窗口帧数（8；延长卡改为15）
     float shot_angle;            // +0x4790c 射击角度（斜向时 ±3π/4，FUN_0045ea00 写入）
     float shot_offset;           // +0x47910 射击 y 偏移（上下方向输入微调）
     uint8_t unk_47914[0x10];     // +0x47914..+0x47923
     int32_t unk_47924;           // +0x47924
-    float respawn_x;             // +0x47928 复活位置
+    float respawn_x;             // +0x47928 死亡位置，复活入场消弹的中心
     float respawn_y;             // +0x4792c
     float respawn_z;             // +0x47930
     int32_t unk_47934;           // +0x47934 上一帧 dx（动画切换判定）

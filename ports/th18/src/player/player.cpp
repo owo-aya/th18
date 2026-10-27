@@ -2,6 +2,7 @@
 #include "player/bomb.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -121,11 +122,18 @@ void player_options_rebuild(Player* p) {
             }
             put_i32(p,q+0xd4,1);
             auto create=[&](int script) {
-                AnmVm* vm=anm_vm_alloc(player_anm(p));anm_vm_set_script(vm,player_anm(p),script);
-                vm->draw_layer=14;anm_queue_add(vm);return vm;
+                AnmVm* vm=anm_vm_alloc(player_anm(p));
+                anm_vm_bind_script(vm,player_anm(p),script);
+                vm->draw_layer=14;vm->flags3=(vm->flags3&~0x200000u)|0x101000u;
+                anm_vm_update(vm);vm->extra_x=224;vm->extra_y=-984;
+                anm_queue_add(vm);return vm;
             };
             g_option_vm[i]=create(option_script[g_player_character]);
-            if(full)g_option_max_vm[i]=create(full_script[g_player_character]);
+            anm_manage_vm(g_option_vm[i],&g_option_vm[i]);
+            if(full) {
+                g_option_max_vm[i]=create(full_script[g_player_character]);
+                anm_manage_vm(g_option_max_vm[i],&g_option_max_vm[i]);
+            }
         }
         g_option_power=power;g_option_full=full;
         card_manager_options_reset();
@@ -155,7 +163,6 @@ void player_options_update(Player* p) {
         for(AnmVm* vm:{g_option_vm[i],g_option_max_vm[i]})if(vm) {
             vm->extra_x=get_i32(p,q+0x5c)/128.0f+224;
             vm->extra_y=get_i32(p,q+0x60)/128.0f+16;
-            anm_vm_update(vm);
         }
     }
 }
@@ -350,8 +357,8 @@ int32_t player_init_from_sht(Player* p) {
     p->anm_player = static_cast<int32_t>(reinterpret_cast<uintptr_t>(anm));
     p->anm_player2 = p->anm_player;
     AnmVm* vm = player_anm_vm(p);
-    anm_vm_reset(vm);
-    anm_vm_set_script(vm, anm, 0);
+    anm_vm_bind_script(vm, anm, 0);
+    anm_vm_update(vm);
 
     uint8_t* sht = static_cast<uint8_t*>(
         file_read(kPlayerShtNames[g_player_shot_type + g_player_character], nullptr, false));
@@ -1381,108 +1388,197 @@ update_secondary_timer:
     p->script_b = -2;
 }
 
+namespace {
+// 45d3a0 / 45d090 / 45d590 use the original timer latch and previous-frame value.
+void player_state_timer(Player* p, int frame) {
+    if ((p->flags_644 & 1) == 0) { p->flags_640=0; p->flags_644|=1; }
+    p->unk_634=frame-1; p->timer_state=frame; p->timer_float=float(frame);
+}
+void player_invulnerability(Player* p, int frames) {
+    if ((p->flags_47784 & 1) == 0) { p->flags_47780=0; p->flags_47784|=1; }
+    p->anim_id=frames-1; p->invuln=frames; p->invuln_value=float(frames);
+}
+void player_tick_timer(Player* p, int offset) {
+    const float speed=stage::g_speed_scale;
+    const bool unit=speed>0.99f && speed<1.01f;
+    put_i32(p,offset,get_i32(p,offset+4));
+    put_i32(p,offset+12,0);
+    const float time=get_f32(p,offset+8)+(unit?1.0f:speed);
+    put_f32(p,offset+8,time);
+    put_i32(p,offset+4,unit?get_i32(p,offset+4)+1:int(time));
+}
+void player_hit_effect(Player* p, int script) {
+    AnmResource* resource=anm_get(8,"effect.anm");
+    AnmVm* vm=anm_vm_alloc(resource);
+    anm_vm_bind_script(vm,resource,script);
+    vm->flags3|=0x1000u;
+    // These scripts use layer 20's game origin; the renderer supplies 224/16.
+    vm->extra_x=p->x; vm->extra_y=p->y; vm->extra_z=p->z;
+    vm->rot_z=0;
+    anm_vm_update(vm);
+    anm_queue_add(vm); anm_manage_vm(vm,nullptr);
+}
+void player_confirm_death(Player* p) {
+    player_hit_effect(p,28);
+    --g_status.lives;
+    if (g_status.lives>=0)
+        g_status.unk_07c=std::clamp(g_status.unk_084,0,g_status.unk_088);
+    p->state=2; player_state_timer(p,0); player_invulnerability(p,180);
+    anm_vm_bind_script(player_anm_vm(p),player_anm(p),0);
+    anm_vm_update(player_anm_vm(p));
+    // 488be0(handle,1) schedules the exit label; A22 advances it once this tick.
+    for (int i=0;i<4;++i) {
+        put_i32(p,0x670+i*0xf0,0);
+        for (AnmVm** slot : {&g_option_vm[i],&g_option_max_vm[i]})
+            if (*slot) { anm_set_label(*slot,1); anm_manage_vm(*slot,nullptr); }
+    }
+    p->unk_476f8=0; g_option_power=-1;
+    for (int i=0;i<12;++i) {
+        const int offset=0xa30+i*0xf0;
+        put_i32(p,offset,0);
+        for (int j=0;j<2;++j) {
+            auto** slot=reinterpret_cast<AnmVm**>(reinterpret_cast<uint8_t*>(p)+offset+0xb0+j*4);
+            if (*slot) { anm_set_label(*slot,1); anm_manage_vm(*slot,nullptr); *slot=nullptr; }
+        }
+    }
+    spell_on_sun_card();
+    card_passive_clear_damage_events();
+    ++stage::g_enemy_manager->field3c;
+    stage::g_enemy_manager->field44=0;
+    if (g_status.miss<999999) ++g_status.miss;
+}
+}
+
 void player_hit() {
-    Player* p = g_player;
-    if (p->state != 1 || p->invuln > 0 || msg_active())
+    Player* p=g_player;
+    if (p->state==2 || p->state==3 || p->state==4 || p->invuln>0 || msg_active())
         return;
-    p->state = 4;
-    p->timer_state = 0;
-    p->timer_float = 0;
-    p->unk_634 = -1;
-    p->invuln = 6;
-    p->invuln_value=6.0f;
-    p->respawn_wait = 8;
-    if((p->flags_4779c&0x100)==0)sound_play_se(2);
+    if ((p->flags_4779c&8)==0) sound_play_se(2);
+    player_hit_effect(p,29);
+    spell_on_sun_card();
+    p->state=4; player_state_timer(p,0); player_invulnerability(p,6);
+    anm_vm_bind_script(player_anm_vm(p),player_anm(p),0);
+    anm_vm_update(player_anm_vm(p));
+    p->respawn_wait=8;
     card_manager_on_hit();
 }
 
 void player_update(Player* p) {
-    // FUN_0045be90
-    if((p->state==1 || p->state==4) && (input_battle_state().pressed&ACTION_BOMB)!=0 && bomb_try_activate()) {
-        if(p->state==4){p->state=1;p->timer_state=60;p->timer_float=60.0f;}
-    }
-    if(p->state!=1)player_options_update(p);
-    switch (p->state) {
-    case 0:
-        // 入场：0x3C 帧后转通常状态（原版同时在用摄像机插值把自机从 y=400 移上来）。
-        if (0x3b < p->timer_state) {
-            p->state = 1;
-            if ((p->flags_644 & 1) == 0) {
-                p->flags_640 = 0;
-                p->flags_644 |= 1;
-            }
-            p->timer_state = 0;
-            p->timer_float = 0.0f;
-            p->unk_634 = -1;
+    // 45be90: an expired deathbomb window is resolved before testing Bomb input.
+    if (p->state==4) {
+        if (p->timer_state>=p->respawn_wait) {
+            if (card_manager_on_death()!=0) goto player_tick_tail;
+            player_confirm_death(p);
+        } else if ((input_battle_state().pressed&ACTION_BOMB)!=0 && bomb_try_activate()) {
+            p->state=1; player_state_timer(p,60);
+            // Native jumps to the common tail; no normal movement this tick.
+            goto player_tick_tail;
         }
-        break;
+    }
+    switch (p->state) {
+    case 0: {
+        p->y_sub=0xf000-p->timer_state*0x2800/60;
+        p->y=float(p->y_sub)/128.0f;
+        player_reset(p);
+        for (auto& point:p->trail) { point[0]=p->x_sub; point[1]=p->y_sub; }
+        if (p->timer_state<30) {
+            const float radius=float(p->timer_state)*512.0f/30.0f+64.0f;
+            laser::cancel_circle(p->respawn_x,p->respawn_y,radius,0,1);
+            laser::cancel_circle(p->respawn_x,p->respawn_y,radius*0.25f,0,0);
+        } else {
+            // 45bf45: spell 0x60 also removes delayed bullets within 128 pixels.
+            SpellManager* spell=spell_manager();
+            if ((spell->flags&1)!=0 && spell->id==0x60)
+                stage::cancel_delayed_enemy_bullets_circle(p->x,p->y,128.0f,0);
+            stage::clear_enemy_bullets(p->x,p->y,640.0f,false);
+        }
+        if (p->timer_state<60) break;
+        p->state=1; player_state_timer(p,0);
+        [[fallthrough]];
+    }
     case 1:
-        // 通常状态：原版此处还有暂停对象 DAT_004cf2a4 判定（关卡/对话框模块）。
+        if ((input_battle_state().pressed&ACTION_BOMB)!=0) bomb_try_activate();
         card_manager_handle_input();
         player_shot_update(p);
         break;
     case 2:
-        if(p->timer_state==30 && g_status.lives<0 && replay_mode()!=ReplayMode::Playback)laser::open_game_over();
-        if (p->timer_state == 3) {
-            status_sub_power(&g_status, g_status.power_step);
-            int lost_money = g_status.money / 3;
-            if (lost_money > 100) lost_money = 100;
-            g_status.money -= lost_money;
+        if (p->timer_state==3) {
+            status_sub_power(&g_status,g_status.power_step);
+            const float angle=std::atan2(-224.0f,-p->x);
+            for (int i=0;i<7;++i)
+                stage::spawn_item(1,p->x,p->y,float(i)*kPiF/28.0f+angle-kPiF/8.0f,3.0f,0);
+            g_status.money-=std::min(g_status.money/3,100);
             card_manager_after_death_penalty();
-            stage::clear_enemy_bullets(p->x, p->y, 640.0f, false);
+            player_refresh_power_options();
         }
-        if (p->timer_state > 29 && g_status.lives >= 0) {
-            p->x = 0; p->y = 400; p->x_sub = 0; p->y_sub = 400 * 128;
-            p->state = 0; p->timer_state = 0; p->invuln = 280;p->invuln_value=280.0f;
-            player_reset(p);
-            card_manager_player_reset();
-            card_manager_options_reset();
-            for (int i = 0; i < 33; ++i) { p->trail[i][0]=p->x_sub; p->trail[i][1]=p->y_sub; }
-        }
-        break;
-    case 4:
-        if (p->timer_state >= p->respawn_wait) {
-            if(card_manager_on_death()==0) {
-                spell_on_sun_card();
-                ++g_status.miss;
-                --g_status.lives;
-                if (g_status.lives >= 0) g_status.unk_07c = g_status.unk_084;
-                p->state = 2; p->timer_state = 0; p->invuln = 180;p->invuln_value=180.0f;
+        if (p->timer_state>=30) {
+            if (g_status.lives<0 && p->timer_state==30) {
+                if (replay_mode()!=ReplayMode::Playback) laser::open_game_over();
+                // 405990 advances once here, then the common tail advances again.
+                player_tick_timer(p,0x634);
+            } else {
+                p->state=0;
+                stage::g_speed_scale=1.0f;
+                player_damage_circle(&p->x,32.0f,16.0f,30,150);
+                p->respawn_x=p->x; p->respawn_y=p->y; p->respawn_z=p->z;
+                p->x=0; p->y=480; p->x_sub=0; p->y_sub=480*128;
+                player_reset(p);
+                player_invulnerability(p,280); player_state_timer(p,0);
             }
         }
         break;
+    case 3:
+        if (p->timer_state==15) laser::clear_lasers(1);
+        break;
     }
-    if(p->invuln>0){p->anim_id=p->invuln;p->invuln_value-=stage::g_speed_scale;p->invuln=int32_t(p->invuln_value);}
-
-    // 主循环尾部的计时器推进。
-    p->unk_634 = p->timer_state;
-    p->timer_state += 1;
-    p->timer_float = static_cast<float>(p->timer_state);
-    p->shoot_cooldown += 1;
-    p->shot_timer += 1;
-
-    // ANM：自机 +0x14 的 VM 每逻辑帧推进一次（原版 FUN_00478580，在 be90 尾部）。
-    anm_vm_update(player_anm_vm(p));
-
-    // FUN_0045BE90 尾部：自机子弹寿命推进（每帧 -1，到 0 消弹），再推进攻击对象。
-    PlayerBullet* bullets = player_bullet_pool(p);
-    for (int32_t i = 0; i < kPlayerBulletCapacity; ++i) {
-        PlayerBullet& b = bullets[i];
-        if ((b.flags & 1u) == 0) {
-            continue;
-        }
-        b.life_prev=b.life;
-        b.last_hit_enemy=0;
-        --b.hit_cooldown;
+player_tick_tail:
+    // The hitbox pool is advanced before the visual and the player clocks.
+    PlayerBullet* bullets=player_bullet_pool(p);
+    const float speed=stage::g_speed_scale;
+    const float step=speed>0.99f && speed<1.01f ? 1.0f : speed;
+    for (int32_t i=0;i<kPlayerBulletCapacity;++i) {
+        PlayerBullet& b=bullets[i];
+        if ((b.flags&1u)==0) continue;
+        auto* motion=reinterpret_cast<Motion*>(b.motion);
+        player_motion_init(motion); player_motion_step(motion);
         b.hit_radius+=b.unk_008;
-        auto* motion=reinterpret_cast<Motion*>(b.motion);player_motion_init(motion);player_motion_step(motion);
-        b.life_f -= 1.0f;
-        b.life = static_cast<int32_t>(b.life_f);
-        if (b.life_f < 1.0f) {
-            b.flags &= ~1u;
-        }
+        b.angle+=b.unk_010;
+        int wraps=0;
+        while (b.angle>kPiF) { b.angle-=kTwoPiF; if (wraps++>=0x21) break; }
+        while (b.angle< -kPiF) { b.angle+=kTwoPiF; if (wraps++>=0x21) break; }
+        b.last_hit_enemy=0;
+        b.unk_06c=0;
+        b.life_prev=b.life; b.life_f-=step; b.life=int32_t(b.life_f);
+        --b.hit_cooldown;
+        if (b.life<1) b.flags&=~1u;
     }
-    // 45be90：寿命池和角色计时器推进完才驱动本帧 SHT，最后推进新旧 AttackObject。
+    if (p->alpha>0) {
+        p->flags_47794=0; p->anim_id2=p->alpha;
+        const float time=get_f32(p,0x47790)-step;
+        put_f32(p,0x47790,time); p->alpha=int(time);
+    }
+    AnmVm* vm=player_anm_vm(p);
+    vm->flags2&=~0xe0000u;
+    if (p->invuln>0) {
+        p->flags_47780=0; p->anim_id=p->invuln;
+        p->invuln_value-=step; p->invuln=int32_t(p->invuln_value);
+        if (p->timer_state!=p->unk_634 && p->timer_state%3==0) {
+            vm->color_alt=0xff0000ff; vm->flags2|=0x20000u;
+        }
+    } else if (p->timer_state%8<4) {
+        if (p->flags_4779c&0x20) { vm->color_alt=0xffff0000; vm->flags2|=0x20000u; }
+        else if (p->move_scale>1.01f) { vm->color_alt=0xffffff00; vm->flags2|=0x20000u; }
+    }
+    p->move_scale=1.0f;
+    p->shake_x=p->shake_y=p->shake_z=0;
+    anm_vm_update(vm);
+    float scale=1.0f;
+    if (p->flags_4779c&0x10) {
+        if (get_i32(p,0x47974)!=0) p->invuln_alpha=interp_eval1(reinterpret_cast<uint8_t*>(p)+0x4794c);
+        scale=get_i32(p,0x47974)!=0 && p->timer_state%3==0 ? 1.0f : p->invuln_alpha;
+    }
+    vm->flags2|=8u; vm->scale_x=vm->scale_y=scale;
+    for (int offset:{0x634,0x648,0x65c}) player_tick_timer(p,offset);
     p->flags_4779c&=~0x200u;
     if(!msg_active() && stage::enemy_count()!=0 && (stage_session_flags()&0x4000)==0 &&
        p->shot_timer>0x13 && (p->flags_4779c&0x194)==0)player_shoot_update(p);
@@ -1494,7 +1590,6 @@ void player_update(Player* p) {
         p->unk_47944=0;p->flag_47948=0;sound_stop_se(30);sound_stop_se(55);
     }
     player_attack_update(p);
-    p->move_scale=1.0f;
 }
 
 ThreadStatus player_logic_task(void* ctx) {

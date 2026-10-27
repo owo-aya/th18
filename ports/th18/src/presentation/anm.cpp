@@ -308,6 +308,21 @@ AnmResource* load_resource(int index, const char* name)
                 res->sprite_count, res->script_count);
     // 原版贴图上传由独立线程推进（sub_486920），这里加载即同步上传。
     anm_upload_step(manager, res);
+    // 486920: each script has a template advanced through frame -1 once.
+    // 407420 copies that state, including its interpolation blocks, on every bind.
+    for (uint32_t i = 0; i < res->script_count; ++i) {
+        AnmVm* vm = anm_vm_at(res, res->scripts[i].id);
+        anm_vm_reset(vm);
+        vm->anm_index = vm->anm_table_index = static_cast<int32_t>(res->index);
+        vm->script = &res->scripts[i];
+        vm->script_index = vm->sprite_index = res->scripts[i].id;
+        vm->script_cursor = 0;
+        vm->flags2 = 6;
+        vm->flags3 = 0x20000;
+        vm->time = static_cast<uint32_t>(-1);
+        vm->expr_stack_a2 = -1.0f;
+        anm_vm_update(vm);
+    }
     storage_log("anm: upload ok");
     return res;
 }
@@ -388,25 +403,12 @@ void anm_load_file(AnmResource* res, const char* name)
     res->scripts = static_cast<AnmScriptEntry*>(calloc(scripts, sizeof(AnmScriptEntry)));
     build_scripts(res);
 
-    // sub_4865b0：每 sprite 一个 VM（0x60c 字节）。脚本也会复用这些 VM，
-    // 所以池大小取 sprite 与 script 的较大者。
-    const uint32_t vm_count = sprites > scripts ? sprites : scripts;
+    // Template indices are script IDs, independent of sprite IDs.
+    uint32_t vm_count = 0;
+    for (uint32_t i = 0; i < scripts; ++i)
+        if (vm_count <= static_cast<uint32_t>(res->scripts[i].id))
+            vm_count = static_cast<uint32_t>(res->scripts[i].id) + 1;
     res->vms = static_cast<uint8_t*>(calloc(vm_count, sizeof(AnmVm)));
-    for (uint32_t i = 0; i < vm_count; ++i)
-    {
-        AnmVm* vm = anm_vm_at(res, i);
-        vm->anm_index = res->index;
-        vm->anm_table_index = static_cast<int32_t>(res->index);
-        vm->sprite_index = static_cast<int32_t>(i);
-        vm->sprite_id = static_cast<uint16_t>(i);
-        vm->color = 0xffffffff;
-        vm->color_alt = 0xffffffff;
-        vm->flags2 = static_cast<uint32_t>(ANM_TYPE_08) << 26;
-        vm->scale_x = 1.0f;
-        vm->scale_y = 1.0f;
-        vm->scale_z = 1.0f;
-        vm->script_cursor = -1;
-    }
 }
 
 AnmResource* anm_load_resource(int index, const char* name)
@@ -1271,21 +1273,28 @@ void anm_vm_free(AnmVm* vm)
     free(vm);
 }
 
-// sub_407420：设脚本号并允许绘制。
+// 407420: replace script state with the resource template. Queue links and owner
+// slots are port bookkeeping; keep them while clearing script callbacks/parents.
 void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id)
 {
-    vm->anm_index = static_cast<int32_t>(res->index);
-    vm->anm_table_index = static_cast<int32_t>(res->index);
-    for (uint32_t i = 0; i < res->script_count; ++i)
-        if (res->scripts[i].id == script_id)
-            vm->script = &res->scripts[i];
-    vm->script_cursor = 0;
-    vm->time = static_cast<uint32_t>(-1);
-    vm->flags2 |= 1u;
-    // 原资源模板86920只执行-1初始化；不提前进入Bullet的0帧或label2。
-    anm_execute_script(vm);
+    const float x = vm->extra_x, y = vm->extra_y, z = vm->extra_z;
+    const uint32_t handle = vm->handle, mask = vm->handle_mask, queue = vm->node_flags;
+    AnmVm* next = vm->queue_next;
+    AnmVm** owner = vm->owner_slot;
+    void* node_next = vm->node_next;
+    void* node_prev = vm->node_prev;
+    *vm = *anm_vm_at(res, script_id);
+    vm->extra_x = x; vm->extra_y = y; vm->extra_z = z;
+    vm->handle = handle; vm->handle_mask = mask;
+    vm->node_flags = queue; vm->node_self = vm;
+    vm->node_next = node_next; vm->node_prev = node_prev;
+    vm->queue_next = next; vm->owner_slot = owner;
     vm->time = 0;
     vm->expr_stack_a2 = 0;
+    vm->expr_stack_a = -1.0f;
+    vm->interp_flags = 1;
+    vm->expr_stack_b = -1.0f;
+    vm->interp_b1 = vm->interp_b2 = 0;
 }
 
 void anm_vm_set_script(AnmVm* vm, AnmResource* res, int script_id)
@@ -1842,12 +1851,12 @@ void anm_execute_script(AnmVm* vm)
                 script_id = static_cast<int32_t>(anm_vm_get_var(vm, script_id));
             AnmResource* res = anm_manager()->resources[vm->anm_index];
             AnmVm* child = anm_vm_alloc(res);
-            child->draw_layer = vm->draw_layer;
+            anm_vm_bind_script(child, res, script_id);
             child->parent = vm;
-            child->flags3 = 0x1000 | (vm->flags3 & 0x8000000u);
+            child->flags3 = (child->flags3 & ~0x8000000u) | (vm->flags3 & 0x8000000u);
             child->node_flags = (instr->type == 501 || instr->type == 503 ? 4u : 0u) |
                                 (instr->type == 502 || instr->type == 503 ? 2u : 0u);
-            anm_vm_set_script(child, res, script_id);
+            anm_vm_update(child);
             if (instr->type == 505) {
                 float* position = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(child) + 0x4e4);
                 position[0] = float_argument(vm, payload, mask, 1);
@@ -1872,6 +1881,7 @@ void anm_execute_script(AnmVm* vm)
             if (mask & 1) script_id = anm_vm_get_var(vm, script_id);
             AnmResource* res = anm_manager()->resources[vm->anm_index];
             AnmVm* emitted = anm_vm_alloc(res);
+            anm_vm_bind_script(emitted, res, script_id);
             emitted->draw_layer = vm->draw_layer;
             emitted->flags3 |= 0x1000 | (vm->flags3 & 0x8000000u);
             emitted->extra_x = vm->extra_x;
@@ -1882,7 +1892,7 @@ void anm_execute_script(AnmVm* vm)
             emitted->rot_z = vm->rot_z;
             float* position = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(emitted) + 0x4e4);
             std::memcpy(position, &vm->pos_x, 12);
-            anm_vm_set_script(emitted, res, script_id);
+            anm_vm_update(emitted);
             if (instr->type == 506) {
                 position[0] = float_argument(vm, payload, mask, 1);
                 position[1] = float_argument(vm, payload, mask, 2);

@@ -16,6 +16,7 @@
 #include "presentation/anm.h"
 #include "presentation/sound.h"
 #include "stage/session.h"
+#include "stage/enemy.h"
 #include "stage/stage.h"
 
 namespace {
@@ -88,6 +89,10 @@ const ShtInstruction* instruction_for(const AttackObject* shot) {
 }
 
 void restore_live_state() {
+    if ((g_player->flags_644 & 1) == 0) {
+        g_player->flags_640 = 0;
+        g_player->flags_644 |= 1;
+    }
     g_player->timer_state = 60;
     g_player->timer_float = 60.0f;
     g_player->unk_634 = 59;
@@ -105,9 +110,16 @@ void start_cancel(AbilityCard* card) {
     card->unk_20 = -1;
     card->unk_24 = 0;
     card->unk_28 = 0.0f;
-    card->unk_2c = 0;
+    if ((card->flags_30 & 1) == 0) { card->unk_2c=0; card->flags_30|=1; }
+    if ((g_player->flags_47784 & 1) == 0) {
+        g_player->flags_47780=0;
+        g_player->flags_47784|=1;
+    }
+    g_player->anim_id=59;
     g_player->invuln = 60;
     g_player->invuln_value = 60.0f;
+    ++stage::g_enemy_manager->field40;
+    stage::g_enemy_manager->field44=0;
     bomb_set_card_active(true);
     spell_on_sun_card(); // 40a2a0/40d840 use the same spell grace-period branch.
     restore_live_state();
@@ -470,6 +482,7 @@ void card_passive_unload(AbilityCard* card) {
 }
 
 void card_passive_damage_event() { ++g_damage_events; }
+void card_passive_clear_damage_events() { g_damage_events=0; }
 
 void card_passive_detach_player(AbilityCard* card) {
     remove_visuals(card);

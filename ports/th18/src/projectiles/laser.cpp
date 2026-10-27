@@ -44,8 +44,8 @@ float aim(float x,float y){return std::atan2(g_player->y-y,g_player->x-x);}
 void position_vm(AnmVm* vm,float x,float y,float z=0){vm->extra_x=x+224;vm->extra_y=y+16;vm->extra_z=z;}
 AnmVm* new_vm(Laser* l,int script,int callback) {
     auto* vm=anm_vm_alloc(static_cast<AnmResource*>(manager->bullet_anm));
-    vm->callback_object=l;vm->sprite_callback=callback;
     anm_vm_bind_script(vm,static_cast<AnmResource*>(manager->bullet_anm),script);
+    vm->callback_object=l;vm->sprite_callback=callback;
     return vm;
 }
 void free_laser(Laser* l) {

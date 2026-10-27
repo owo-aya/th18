@@ -12,6 +12,6 @@ void card_options_reset(AbilityCard* card);
 void card_options_player_move(AbilityCard* card);
 void card_options_shoot(AbilityCard* card, int timer_a, int timer_b);
 
-// Advance owned visuals once per logic frame, including death/respawn frames.
+// Notify visual state; the ANM manager advances owned VMs, including exit animations.
 void card_options_update(AbilityCard* card);
 void card_options_unload(AbilityCard* card);

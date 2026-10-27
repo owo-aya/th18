@@ -79,6 +79,17 @@ static AnmResource* g_effect_anm;
 static void bullets_update();
 static Thread* g_bullet_logic;
 static Thread* g_bullet_render;
+static Thread* g_pickup_render;
+static ThreadStatus pickups_render_task(void*) {
+    gfx_select_camera(3);
+    for (auto& p:g_pickups) {
+        if (p.delay>0) continue;
+        // 446d60 keeps the item's world position in extra, separate from ANM motion.
+        p.vm->extra_x=p.x+224; p.vm->extra_y=p.y+16;
+        anm_draw_vm(p.vm);
+    }
+    return THREAD_CONTINUE;
+}
 static ThreadStatus bullets_logic_task(void*) {
     if(stage_session_started() && !shop_active())bullets_update();
     return THREAD_CONTINUE;
@@ -500,6 +511,7 @@ EnemyManager* create_enemy_manager(const char* ecl_name) {
     extra_effects_start();
     g_bullet_logic=thread_create(bullets_logic_task);thread_set_priority(g_bullet_logic,0x1d);thread_enqueue_logic(g_bullet_logic);
     g_bullet_render=thread_create(bullets_render_task);thread_set_priority(g_bullet_render,0x26);thread_enqueue_render(g_bullet_render);
+    g_pickup_render=thread_create(pickups_render_task);thread_set_priority(g_pickup_render,0x21);thread_enqueue_render(g_pickup_render);
 
     manager->task_logic = thread_create(enemy_manager_update);
     thread_set_priority(manager->task_logic, 0x1b);
@@ -517,7 +529,7 @@ void destroy_enemy_manager(EnemyManager* manager) {
     if (manager == nullptr) return;
     while (manager->enemy_head != nullptr) delete_enemy(manager->enemy_head->self);
     extra_effects_stop();
-    thread_remove(g_bullet_logic);thread_remove(g_bullet_render);
+    thread_remove(g_bullet_logic);thread_remove(g_bullet_render);thread_remove(g_pickup_render);
     for(auto& b:g_enemy_bullets)anm_vm_free(b.vm);g_enemy_bullets.clear();
     for(auto& p:g_pickups)anm_vm_free(p.vm);g_pickups.clear();
     for(auto* vm:g_cancel_effects)if(vm)anm_vm_free(vm);g_cancel_effects.clear();
@@ -713,9 +725,9 @@ void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin
         b.transform_se=slot.type;
         b.render_bucket=bullet_render_buckets[type];
         b.cursor=*reinterpret_cast<const int32_t*>(raw+0x480);
-        vm->callback_object=&b;vm->sprite_callback=1;
         std::memcpy(b.extras,raw+0x28,sizeof(b.extras));b.vx=std::cos(angle)*speed;b.vy=std::sin(angle)*speed;
         anm_vm_bind_script(vm,g_bullet_anm,def.script);
+        vm->callback_object=&b;vm->sprite_callback=1;
         if(b.extras[b.cursor].type==2) {
             const int label=b.extras[b.cursor++].i[0];
             b.appearing=true;b.x-=b.vx*4;b.y-=b.vy*4;
@@ -786,6 +798,12 @@ void player_graze(float x,float y) {
     sound_play_se_at(42,x);
 }
 int kaname_cancel_bullets(float x,float y) {return cancel_enemy_bullets_circle(x,y,18,0);}
+void cancel_delayed_enemy_bullets_circle(float x,float y,float radius,int kind) {
+    for(auto& b:g_enemy_bullets) {
+        const float dx=b.x-x,dy=b.y-y,r=radius+b.radius*0.5f;
+        if(b.cancel_state==0 && dx*dx+dy*dy<=r*r)bullet_cancel(b,kind);
+    }
+}
 int cancel_enemy_bullets_circle(float x,float y,float radius,int kind) {
     int count=0;
     for(auto& b:g_enemy_bullets) {
@@ -845,8 +863,12 @@ static void pickup_create(float x,float y,int kind,int value) {
 }
 void spawn_item(int32_t kind,float x,float y,float angle,float speed,int32_t delay) {
     static constexpr int scripts[]={-1,112,113,114,115,116,117,118,119,120,121,122,123,124,125,-1,3,4,5,6};
-    AnmVm* vm=anm_vm_alloc(g_bullet_anm);anm_vm_set_script(vm,g_bullet_anm,scripts[kind]);vm->extra_x=224;vm->extra_y=16;vm->pos_x=x;vm->pos_y=y;anm_queue_add(vm);
-    g_pickups.push_back({x,y,std::cos(angle)*speed,std::sin(angle)*speed,kind,1,0,vm,delay,0});
+    if (kind==15) kind=6;
+    const bool cancel_point=kind>=9 && kind<=14;
+    if (!cancel_point) x=std::clamp(x,-192.0f,192.0f);
+    AnmVm* vm=anm_vm_alloc(g_bullet_anm);
+    anm_vm_bind_script(vm,g_bullet_anm,scripts[kind]);anm_vm_update(vm);
+    g_pickups.push_back({x,y,std::cos(angle)*speed,std::sin(angle)*speed,kind,1,cancel_point?2:1,vm,delay,0});
 }
 static void enemy_drop_items(Enemy& e) {
     pickup_create(e.x,e.y,e.drop_kind,1);
@@ -1154,14 +1176,38 @@ static void bullets_update() {
         const float pickup_radius=*reinterpret_cast<const float*>(player+0x4798c);
         const float pull_radius=*reinterpret_cast<const float*>(player+(g_player->focus_mode?0x47990:0x47994));
         const float line=*reinterpret_cast<const float*>(player+0x47998);
-        const bool alive=g_player->state!=2 && g_player->state!=4;
-        if(alive && g_player->y<line && !msg_active() && p.pull_state!=3){p.pull_state=3;p.pull_speed=pull_speed;}
-        else if(alive && p.pull_state==0 && d<pull_radius && (p.kind<9 || p.kind>14)){p.pull_state=4;p.pull_speed=pull_speed/3;}
-        if(p.pull_state!=0 && d>0){p.vx=dx*p.pull_speed/d;p.vy=dy*p.pull_speed/d;if(p.pull_speed<12)p.pull_speed+=0.2f;}
-        else {p.vy+=0.03f;if(p.vy>2)p.vy=2;}
-        p.x+=p.vx;p.y+=p.vy;p.vm->pos_x=p.x;p.vm->pos_y=p.y;anm_vm_update(p.vm);
+        const bool auto_collect=(g_player->state!=2 && g_player->state!=4 && g_player->y<line) ||
+            (bomb_active() && bomb_elapsed_frames()<60) || msg_active();
+        bool outside=false;
+        if(p.pull_state==1) {
+            if(auto_collect){p.pull_state=3;p.pull_speed=pull_speed;}
+            else {
+                p.x+=p.vx*g_speed_scale;p.y+=p.vy*g_speed_scale;
+                p.vy+=0.03f*g_speed_scale;
+                // Ordinary drops stop drifting sideways at their apex.
+                if(p.vy>=0)p.vx=0;
+                if(p.vy>2)p.vy=2;
+                outside=p.y>472 || std::fabs(p.x)>=200;
+            }
+        } else if(p.pull_state==2) {
+            p.x+=p.vx*g_speed_scale;p.y+=p.vy*g_speed_scale;
+            p.vy+=0.03f*g_speed_scale;
+            if(p.vy>=0){p.pull_state=3;p.pull_speed=pull_speed;}
+            else outside=p.y>472 || std::fabs(p.x)>=200;
+        } else if(p.pull_state==4 && auto_collect){p.pull_state=3;p.pull_speed=pull_speed;}
+        if(p.pull_state==3 || p.pull_state==4) {
+            const float angle=g_player->x==p.x && g_player->y==p.y?1.57079637f:
+                std::atan2(g_player->y-p.y,g_player->x-p.x);
+            p.vx=std::cos(angle)*p.pull_speed;p.vy=std::sin(angle)*p.pull_speed;
+            p.x+=p.vx*g_speed_scale;p.y+=p.vy*g_speed_scale;
+            if(p.pull_speed<12)p.pull_speed+=0.2f;
+            // 4461f3: a hit cancels attraction; it must not follow the respawn jump.
+            if(g_player->state==4){p.pull_state=1;p.vx=p.vy=0;}
+        }
+        if(outside){anm_vm_free(p.vm);g_pickups.erase(g_pickups.begin()+i);continue;}
+        anm_vm_update(p.vm);
         dx=g_player->x-p.x;dy=g_player->y-p.y;d=std::sqrt(dx*dx+dy*dy);
-        if(alive && d<pickup_radius) {
+        if(g_player->state!=2 && d<pickup_radius) {
             if(p.kind==1){if(status_add_power(&g_status,p.value)){player_refresh_power_options();sound_play_se_at(13,g_player->x);}}
             else if(p.kind==2) {
                 const float unit=g_difficulty==0?500.0f:1000.0f;
@@ -1184,7 +1230,13 @@ static void bullets_update() {
             else if(p.kind>=16 && p.kind<=19)card_manager_acquire(static_cast<CardId>(p.kind-13),0);
             sound_play_se_at(37,p.x);
             anm_vm_free(p.vm);g_pickups.erase(g_pickups.begin()+i);
-        } else if(p.y>520){anm_vm_free(p.vm);g_pickups.erase(g_pickups.begin()+i);}else ++i;
+        } else {
+            if(g_player->state!=2 && p.pull_state!=3 && p.pull_state!=4 &&
+               d<pull_radius && (p.kind<9 || p.kind>14)) {
+                p.pull_state=4;p.pull_speed=pull_speed/3;
+            }
+            ++i;
+        }
     }
 }
 
