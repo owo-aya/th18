@@ -88,6 +88,15 @@ ThreadStatus update(void*) {
         card_passive_update(g_instances[i]);
         card_active_update(g_instances[i]);
     }
+    stage::hud_update_cards();
+    // 408640 -> 405990: the flash clock belongs to the card manager and
+    // advances after visual updates, including fractional game speed.
+    g_cards.visual_previous=g_cards.visual_frame;
+    g_cards.visual_latch=0;g_cards.visual_flags|=1;
+    const float speed=stage::g_speed_scale;
+    const bool unit=speed>0.99f && speed<1.01f;
+    g_cards.visual_time+=unit?1.0f:speed;
+    g_cards.visual_frame=unit?g_cards.visual_frame+1:int(g_cards.visual_time);
     return THREAD_CONTINUE;
 }
 } // namespace

@@ -27,7 +27,12 @@ struct CardManager {
     int32_t count_kind40;        // +0x30 flags_50 & 0x40 的卡数
     int32_t count_other;         // +0x34 其余卡数
     AbilityCard* special;        // +0x38 flags_50 & 8 的唯一卡（MAINSHOT 类）
-    uint8_t unk_3c[0x1c];        // +0x3c..+0x57
+    uint8_t unk_3c[8];           // +0x3c..+0x43
+    int32_t visual_previous;    // +0x44 显示计时器
+    int32_t visual_frame;       // +0x48 发动闪烁相位
+    float visual_time;          // +0x4c 随游戏速度推进
+    uint32_t visual_latch;      // +0x50
+    uint32_t visual_flags;      // +0x54
     int32_t slot_objects[256];   // +0x58 FUN_00408d00 遍历的 256 个槽
     uint8_t unk_458[0xc58 - 0x458]; // +0x458..+0xc57 未整理区
     float lily_multiplier;       // +0xc58 Lily 卡的道具价值倍率（FUN_0040fe70 读取）

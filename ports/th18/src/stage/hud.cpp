@@ -28,6 +28,7 @@ AnmVm* g_timer_positions[2]; // 原Stage+84/+88，ASCII2/3的隐藏倒计时坐�
 AnmVm* g_active;
 CardId g_active_id;
 AnmVm* g_cards[256];
+AbilityCard* g_card_objects[256];
 int g_card_count;
 int g_previous_lives[3];
 int g_previous_bombs[3];
@@ -63,26 +64,31 @@ void assign_icon(AnmVm* root, int first, int second, int sprite) {
     if (AnmVm* vm = anm_find_child(root, second)) anm_set_sprite(vm, resource, sprite);
 }
 
-void cooldown_visual(AnmVm* root, int front_script, int back_script, const AbilityCard* card) {
+void cooldown_visual(AnmVm* root, int front_script, int back_script, const AbilityCard* card, bool rotated) {
     const float progress = card->flags_50 & 0x20 ? 1.0f :
-        1.0f - static_cast<float>(card->count) / card->param_48;
+        1.0f - card->count_f / card->param_48;
     // 0x408890：图案从底部显露，冷却完毕后变绿，发动期间闪红。
+    anm_set_label(root,(card->flags_50&0x20) || card->count==0 ? 2 : 3);
     const int scripts[] = {front_script, back_script};
     for (int script : scripts) {
         AnmVm* vm = anm_find_child(root, script);
         if (vm == nullptr) continue;
-        AnmResource* resource = anm_manager()->resources[vm->anm_table_index];
-        const int sprite = vm->sprite_index;
-        anm_set_sprite(vm, resource, sprite);
-        const float height = vm->sprite_h;
-        vm->uv[1] = vm->uv[3] - (vm->uv[3] - vm->uv[1]) * progress;
-        vm->sprite_h *= progress;
-        vm->pos_y = height * (1.0f - progress) * 0.5f;
+        // Native +58/+70/+80: scale geometry and UVs, keeping sprite bounds.
+        vm->scale_y=vm->uv_scale_v=progress;
+        vm->uv_offset_v=0.625f*(1.0f-progress);
+        vm->flags2|=0x18u;
+        if(rotated) {
+            const float rotation=vm->rot_z+root->rot_z;
+            const float offset=40.0f*(1.0f-progress);
+            vm->pos_x=-std::sin(rotation)*offset;
+            vm->pos_y=std::cos(rotation)*offset;
+            vm->pos_z=0;
+        }
         if (vm->script->id != front_script)
             continue;
         uint32_t rgb;
         if (card->flags_50 & 0x20)
-            rgb = session().logic_frame % 4 < 3 ? 0xff0000u : 0xffffffu;
+            rgb = card_manager()->visual_frame % 4 < 3 ? 0xff0000u : 0xffffffu;
         else if (card->count == 0)
             rgb = 0x40ff40u;
         else {
@@ -256,9 +262,13 @@ void hud_refresh_cards() {
     for (int i = 0; i < card_manager_equipped_count(); ++i)
         ++category_count[card_info_by_id(card_manager_equipped_id(i))->category];
     int category_index[3]{};
-    g_card_count = card_manager_equipped_count();
-    for (int i = 0; i < g_card_count; ++i) {
-        const CardInfo* info = card_info_by_id(card_manager_equipped_id(i));
+    g_card_count = 0;
+    for (int index = 0; index < card_manager_card_count(); ++index) {
+        AbilityCard* card=card_manager_card_at(index);
+        if(card->id==Null)continue;
+        const int i=g_card_count++;
+        g_card_objects[i]=card;
+        const CardInfo* info = card->info;
         const int category = info->category;
         g_cards[i] = create(cards, 5, true);
         g_cards[i]->extra_x = static_cast<float>(category_count[category] - 1) * 40.0f -
@@ -278,14 +288,18 @@ void hud_update() {
     anm_vm_update(g_rank);
     anm_vm_update(g_character);
     for (AnmVm* vm : g_timer_positions) anm_vm_update(vm);
+}
+
+void hud_update_cards() {
+    // 408640 runs at A0x16 after card effects, before the ANM tick.
     if (g_active) {
+        cooldown_visual(g_active, 2, 3, card_manager()->special, false);
         anm_vm_update(g_active);
-        cooldown_visual(g_active, 2, 3, card_manager()->special);
     }
     for (int i = 0; i < g_card_count; ++i) {
+        if (g_card_objects[i]->flags_50&8)
+            cooldown_visual(g_cards[i], 9, 7, g_card_objects[i], true);
         anm_vm_update(g_cards[i]);
-        if (card_info_by_id(card_manager_equipped_id(i))->category == 0)
-            cooldown_visual(g_cards[i], 8, 9, card_manager_card_at(i));
     }
 }
 
