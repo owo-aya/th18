@@ -20,7 +20,7 @@
 #include "gameplay/score_data.h"
 #include "stage/stage.h"
 
-static float g_frame_fps=60.0f;
+static float g_frame_fps=0.0f;
 float platform_frame_fps() {return g_frame_fps;}
 
 static HWND g_window;
@@ -94,6 +94,18 @@ void platform_set_display_mode(int mode) {
 }
 
 namespace {
+
+ThreadStatus draw_fps(void*) {
+    // 43a340 at B0x52, before the final ASCII pass; 41a110 selects style 1.
+    if(app_context()->state==4 || app_context()->state==0xf)return THREAD_CONTINUE;
+    text_set_group(0);text_set_life(0);text_set_style(1);
+    text_set_alignment(1,1);text_set_size(2,2);
+    text_set_color(g_frame_fps<30?0xff5050ffu:g_frame_fps<40?0xffa0a0ffu:0xffffffffu);
+    const TextPos position{588*2.0f,470*2.0f,0};
+    text_draw_fmt(text_manager(),&position,"%2.1ffps",double(g_frame_fps)+0.05);
+    text_set_color(0xffffffffu);text_set_size(1,1);text_set_style(0);
+    return THREAD_CONTINUE;
+}
 
 void save_window_position() {
     // 最小化时GetWindowRect会返回(-32000,-32000)，不能存为下次启动位置。
@@ -217,6 +229,8 @@ int platform_run(HINSTANCE hinst) {
     game_data_init();
     storage_log("init: game_data ok");
     text_create();
+    Thread* fps_task=thread_create(draw_fps);fps_task->flags|=2;
+    thread_set_priority(fps_task,0x52);thread_enqueue_render(fps_task);
     storage_log("init: text ok");
     sound_init();
     sound_set_se_enabled(storage_config().data[0x46]!=0);
@@ -237,7 +251,8 @@ int platform_run(HINSTANCE hinst) {
     LARGE_INTEGER freq, prev;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&prev);
-    LARGE_INTEGER previous_frame=prev;
+    LARGE_INTEGER fps_start=prev;
+    uint32_t fps_frames=0;
 
     for (;;) {
         MSG msg;
@@ -248,6 +263,7 @@ int platform_run(HINSTANCE hinst) {
                 save_window_position();
                 storage_config_save();
                 sound_shutdown();
+                thread_remove(fps_task);
                 text_destroy(text_manager());
                 game_data_shutdown();
                 dat_close();
@@ -269,12 +285,9 @@ int platform_run(HINSTANCE hinst) {
             // 关闭请求仍交给app状态机清理，即使设备尚未恢复。
             if (app_context()->next_state != 3 && !gfx_ready()) {
                 acc = 0;
-                previous_frame = now;
                 Sleep(10);
                 continue;
             }
-            g_frame_fps=float(double(freq.QuadPart)/double(now.QuadPart-previous_frame.QuadPart));
-            previous_frame=now;
             uint32_t raw_bits = input_sample_device();
             {
                 static uint32_t last_bits = 0;
@@ -294,6 +307,7 @@ int platform_run(HINSTANCE hinst) {
                 // 原版主循环：FUN_004012e0 返回 0=退出（STOP_ZERO）、-1=重启，
                 // 其余为正常帧（执行过的线程数）。
                 sound_shutdown();
+                thread_remove(fps_task);
                 text_destroy(text_manager());
                 game_data_shutdown();
                 dat_close();
@@ -305,6 +319,15 @@ int platform_run(HINSTANCE hinst) {
                 gfx_clear();
                 thread_run_render();
                 gfx_end();
+                // 4728a0 runs after Present: publish the preceding window,
+                // then count this frame towards the next sample.
+                LARGE_INTEGER presented;QueryPerformanceCounter(&presented);
+                const double elapsed=double(presented.QuadPart-fps_start.QuadPart)/double(freq.QuadPart);
+                if(elapsed>=1.0) {
+                    g_frame_fps=float(double(fps_frames)/elapsed);
+                    fps_start=presented;fps_frames=0;
+                }
+                ++fps_frames;
             }
             acc -= step;
         }

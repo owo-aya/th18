@@ -11,6 +11,8 @@ static int g_camera = 2;
 static float g_camera_shake[4][2];
 static IDirect3DTexture9* g_scene_texture = nullptr;
 static IDirect3DSurface9* g_scene_surface = nullptr;
+static IDirect3DTexture9* g_scene_sample_texture = nullptr;
+static IDirect3DSurface9* g_scene_sample_surface = nullptr;
 static IDirect3DSurface9* g_backbuffer = nullptr;
 static HMODULE g_d3dx = nullptr;
 using LoadSurfaceFromSurface = HRESULT(WINAPI*)(IDirect3DSurface9*, const PALETTEENTRY*, const RECT*,
@@ -25,9 +27,15 @@ static void create_scene_surface() {
     g_dev->CreateTexture(640, 480, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
                         D3DPOOL_DEFAULT, &g_scene_texture, nullptr);
     g_scene_texture->GetSurfaceLevel(0, &g_scene_surface);
+    g_dev->CreateTexture(640,480,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,
+                        D3DPOOL_DEFAULT,&g_scene_sample_texture,nullptr);
+    g_scene_sample_texture->GetSurfaceLevel(0,&g_scene_sample_surface);
 }
 
 static void release_scene_surface() {
+    g_dev->SetTexture(0,nullptr);
+    g_scene_sample_surface->Release();g_scene_sample_surface=nullptr;
+    g_scene_sample_texture->Release();g_scene_sample_texture=nullptr;
     g_scene_surface->Release();
     g_scene_texture->Release();
     g_backbuffer->Release();
@@ -194,8 +202,36 @@ void gfx_copy_game_surface(IDirect3DSurface9* destination, const RECT& rectangle
     g_load_surface(destination, nullptr, &rectangle, g_scene_surface, nullptr, &source, 2, 0);
 }
 
-void gfx_copy_scene_surface(IDirect3DSurface9* destination) {
-    g_load_surface(destination, nullptr, nullptr, g_scene_surface, nullptr, nullptr, 1, 0);
+IDirect3DTexture9* gfx_sample_scene() {
+    // 455610/455530 keep @R on the GPU. Copy into a second render target
+    // so the distortion never reads back into a MANAGED texture each frame.
+    struct Vertex {float x,y,z,rhw,u,v;};
+    const Vertex quad[]={{-0.5f,-0.5f,0,1,0,0},{639.5f,-0.5f,0,1,1,0},
+                         {-0.5f,479.5f,0,1,0,1},{639.5f,479.5f,0,1,1,1}};
+    g_dev->SetRenderTarget(0,g_scene_sample_surface);
+    const D3DVIEWPORT9 viewport{0,0,640,480,0,1};g_dev->SetViewport(&viewport);
+    g_dev->SetRenderState(D3DRS_SCISSORTESTENABLE,FALSE);
+    g_dev->SetRenderState(D3DRS_ZENABLE,FALSE);
+    g_dev->SetRenderState(D3DRS_ZWRITEENABLE,FALSE);
+    g_dev->SetRenderState(D3DRS_FOGENABLE,FALSE);
+    g_dev->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
+    g_dev->SetRenderState(D3DRS_ALPHABLENDENABLE,FALSE);
+    g_dev->SetRenderState(D3DRS_ALPHATESTENABLE,FALSE);
+    g_dev->SetTexture(0,g_scene_texture);
+    g_dev->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1);
+    g_dev->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TEXTURE);
+    g_dev->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);
+    g_dev->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE);
+    g_dev->SetTextureStageState(0,D3DTSS_TEXTURETRANSFORMFLAGS,D3DTTFF_DISABLE);
+    g_dev->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);
+    g_dev->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
+    g_dev->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);
+    g_dev->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);
+    g_dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);
+    g_dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex));
+    g_dev->SetTexture(0,nullptr);
+    g_dev->SetRenderTarget(0,g_scene_surface);
+    return g_scene_sample_texture;
 }
 
 IDirect3DDevice9* gfx_device() {

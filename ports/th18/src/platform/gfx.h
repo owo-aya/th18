@@ -15,7 +15,7 @@ IDirect3DDevice9* gfx_device();
 // 487580/458480：把上一完整场景的游戏区复制到暂停底图精灵的texture区域。
 void gfx_copy_game_surface(IDirect3DSurface9* destination, const RECT& rectangle);
 // Boss distortion samples the current full scene (@R), including edge texels.
-void gfx_copy_scene_surface(IDirect3DSurface9* destination);
+IDirect3DTexture9* gfx_sample_scene(); // GPU texture, owned/reset by gfx; caller restores draw state
 HWND gfx_hwnd();
 // 当前1280虚拟画布的原相机pass；clipped对应camera2的+124裁剪viewport。
 void gfx_select_camera(int camera, bool clipped = false);

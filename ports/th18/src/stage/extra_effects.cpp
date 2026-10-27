@@ -31,7 +31,6 @@ struct Aura {
 };
 std::list<Aura> auras;
 Thread* aura_render;
-IDirect3DTexture9* aura_texture;
 
 float visual_random() {return float(rng_next(card_rng()))*2.3283064e-10f;}
 float angle(float value) {
@@ -82,11 +81,10 @@ ThreadStatus draw_auras(void*) {
     };
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,opaque_alpha,sizeof(AuraVertex));
     // 455530 renders layer35 at B0x0f, after the background has been drawn.
-    IDirect3DSurface9* surface;
-    aura_texture->GetSurfaceLevel(0,&surface);
     // 455d80 uses text66's @R texture. The pause-copy rectangle excludes
     // its right/bottom texels, but 42f890 can sample those edge texels.
-    gfx_copy_scene_surface(surface);surface->Release();
+    IDirect3DTexture9* aura_texture=gfx_sample_scene();
+    gfx_select_camera(3);
     texture_state(device);device->SetTexture(0,aura_texture);
     device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_POINT);
     device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_POINT);
@@ -124,7 +122,6 @@ void extra_effects_start() {
 }
 void extra_effects_stop() {
     thread_remove(aura_render);aura_render=nullptr;auras.clear();
-    if(aura_texture){aura_texture->Release();aura_texture=nullptr;}
 }
 
 void extra_maple_spawn(AnmResource* resource) {
@@ -201,7 +198,6 @@ void extra_aura_free(stage::Enemy& enemy) {
 void extra_aura_set(stage::Enemy& enemy,float radius,uint32_t color) {
     extra_aura_free(enemy);
     if(radius<=0)return;
-    if(aura_texture==nullptr)gfx_device()->CreateTexture(640,480,1,0,D3DFMT_A8R8G8B8,D3DPOOL_MANAGED,&aura_texture,nullptr);
     // 42b1f0 appends each new aura's strips to the ANM draw queue.
     auras.push_back(Aura{});auto& aura=auras.back();aura.enemy=&enemy;aura.target=radius;aura.radius=16;aura.color=color;
 }
