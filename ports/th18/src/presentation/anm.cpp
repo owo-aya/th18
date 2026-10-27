@@ -140,6 +140,36 @@ float total_rotation_z(const AnmVm* vm)
     return angle;
 }
 
+// 4065a0/4063d0 in the port's 640-pixel scene. Native +5bc names the
+// outer root; +5c0 names the direct parent used separately for sprite scale.
+void flat_scene_position(const AnmVm* vm,float* out)
+{
+    const uint32_t mode=(vm->flags3>>22)&7;
+    const float factor=(mode==2 || mode==4)?0.5f:1.0f;
+    const float* offset=reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm)+0x4e4);
+    out[0]=(vm->pos_x+vm->extra_x+offset[0])*factor;
+    out[1]=(vm->pos_y+vm->extra_y+offset[1])*factor;
+    out[2]=(vm->pos_z+vm->extra_z+offset[2])*factor;
+    if(vm->parent!=nullptr && (vm->flags3&0x40000u)==0) {
+        const auto* root=static_cast<const AnmVm*>(vm->parent);
+        while(root->parent!=nullptr)root=static_cast<const AnmVm*>(root->parent);
+        if(vm->flags3&0x2000000u) {
+            const float c=std::cos(root->rot_z),s=std::sin(root->rot_z),x=out[0],y=out[1];
+            out[0]=x*c-y*s;out[1]=y*c+x*s;
+        }
+        float root_position[3];flat_scene_position(root,root_position);
+        for(int axis=0;axis<3;++axis)out[axis]+=root_position[axis];
+    } else {
+        const uint32_t origin=vm->flags3&0x300000u;
+        // Independent gameplay callers already include (224,16) in extra.
+        // An ANM child opting out of inheritance still uses script-local XY.
+        if(origin==0x200000u || origin==0x300000u ||
+            (origin==0x100000u && vm->parent!=nullptr)) {
+            out[0]+=224;out[1]+=16;
+        }
+    }
+}
+
 float* float_variable(AnmVm* vm, float* argument)
 {
     const int id = static_cast<int>(*argument);
@@ -710,7 +740,11 @@ void anm_draw_vm(AnmVm* vm)
     world._21 = (sx * sy * cz - cx * sz) * vm->scale_y;
     world._22 = (sx * sy * sz + cx * cz) * vm->scale_y;
     world._23 = sx * cy * vm->scale_y;
-    if (render_type == 1 || render_type == 3 || primitive) {
+    if (render_type == 0 || render_type == 2) {
+        // 481210 -> 47e8f0: these types ignore both local and inherited rotation.
+        world._11=vm->scale_x;world._12=world._13=0;
+        world._21=world._23=0;world._22=vm->scale_y;
+    } else if (render_type == 1 || render_type == 3 || primitive) {
         // sub_481210 -> sub_47ed50：这两类是平面旋转精灵，仅使用Z角。
         // abcard12 同时写X/Z角；把X角送入D3D深度会裁掉大部分卡面。
         world._11 = cz * vm->scale_x;
@@ -719,6 +753,10 @@ void anm_draw_vm(AnmVm* vm)
         world._21 = -sz * vm->scale_y;
         world._22 = cz * vm->scale_y;
         world._23 = 0.0f;
+    }
+    if (render_type<=3) {
+        world._11*=vm->scale_extra_x;world._12*=vm->scale_extra_x;
+        world._21*=vm->scale_extra_y;world._22*=vm->scale_extra_y;
     }
     if(vm->sprite_callback==1) {
         const float scale=stage::bullet_scale_for_vm(vm);
@@ -746,24 +784,24 @@ void anm_draw_vm(AnmVm* vm)
     world._41 *= position_scale;
     world._42 *= position_scale;
     world._43 *= position_scale;
-    const AnmVm* position_root = vm;
-    while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0)
-    {
-        const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
-        const uint32_t mode = (parent->flags3 >> 22) & 7;
-        const float factor = (mode == 2 || mode == 4) ? 1.0f : 2.0f;
-        const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
-        world._41 += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
-        world._42 += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
-        if (render_type == 8) world._43 += (parent->pos_z + parent->extra_z + parent_offset[2]) * factor;
-        position_root = parent;
-    }
-    if (!background_3d && (position_root->flags3 & 0x300000u) == 0x200000u) {
-        // 4063d0: UI layers 20..23 add the origin once, at the root.
-        // Fold the original camera's gameplay viewport into our 1280 scene.
-        // Gameplay VMs (0x100000) already carry their scene origin in extra_x/y.
-        world._41 += 448.0f;
-        world._42 += 32.0f;
+    if(render_type<=3) {
+        float position[3];flat_scene_position(vm,position);
+        world._41=position[0]*2;world._42=position[1]*2;
+    } else {
+        const AnmVm* position_root = vm;
+        while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0) {
+            const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
+            const uint32_t mode = (parent->flags3 >> 22) & 7;
+            const float factor = (mode == 2 || mode == 4) ? 1.0f : 2.0f;
+            const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
+            world._41 += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
+            world._42 += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
+            if (render_type == 8) world._43 += (parent->pos_z + parent->extra_z + parent_offset[2]) * factor;
+            position_root = parent;
+        }
+        if (!background_3d && (position_root->flags3 & 0x300000u) == 0x200000u) {
+            world._41 += 448.0f;world._42 += 32.0f;
+        }
     }
     // sub_47e8f0：父VM的比例同样参与子精灵大小（abcard0 的 .75 外壳）。
     if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
@@ -774,6 +812,10 @@ void anm_draw_vm(AnmVm* vm)
         world._21 *= parent->scale_y;
         world._22 *= parent->scale_y;
         world._23 *= parent->scale_y;
+        if (render_type<=3) {
+            world._11*=parent->scale_extra_x;world._12*=parent->scale_extra_x;
+            world._21*=parent->scale_extra_y;world._22*=parent->scale_extra_y;
+        }
     }
     set_matrix(dev, D3DTS_WORLD, world);
 
@@ -808,6 +850,24 @@ void anm_draw_vm(AnmVm* vm)
     if (address_v < 3) dev->SetSamplerState(0, D3DSAMP_ADDRESSV, address[address_v]);
 
     dev->SetFVF(kFvfSprite);
+    if (render_type<=3) {
+        // 47dce0 consumes screen vertices, independently of the STD 3D matrices.
+        // Type 0 rounds to the D3D9 pixel grid; type 2 deliberately does not.
+        struct ScreenVertex {float x,y,z,rhw;uint32_t color;float u,v;};
+        ScreenVertex screen[4];
+        float shake_x,shake_y;gfx_get_camera_shake(gfx_current_camera(),shake_x,shake_y);
+        for(int i=0;i<4;++i) {
+            const auto& v=vertices[i];
+            float x=(v.x*world._11+v.y*world._21+world._41)*0.5f+shake_x;
+            float y=(v.x*world._12+v.y*world._22+world._42)*0.5f+shake_y;
+            if(render_type==0){x=std::nearbyint(x)-0.5f;y=std::nearbyint(y)-0.5f;}
+            screen[i]={x,y,vm->pos_z+vm->extra_z+offset[2],1,v.color,v.u,v.v};
+        }
+        dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,screen,sizeof(ScreenVertex));
+        ++manager->draw_count;
+        return;
+    }
     if (render_type == 0x12) {
         // 481210 -> 482e70：无纹理的闭合线圆；605的半径不是精灵宽高。
         const int segments = static_cast<int>(vm->frame_counter);
@@ -992,26 +1052,37 @@ void anm_vm_corners(const AnmVm* vm, float corners[4][2])
     float yx = (sx * sy * cz - cx * sz) * vm->scale_y;
     float yy = (sx * sy * sz + cx * cz) * vm->scale_y;
     const uint32_t render_type = (vm->flags2 >> 26) & 0x1f;
-    if (render_type == 1 || render_type == 3) {
+    // 481d20 differs from drawing: type 3 also requests unrotated corners.
+    if (render_type == 0 || render_type == 2 || render_type == 3) {
+        xx=vm->scale_x;xy=0;yx=0;yy=vm->scale_y;
+    } else if (render_type == 1) {
         xx = cz * vm->scale_x;
         xy = sz * vm->scale_x;
         yx = -sz * vm->scale_y;
         yy = cz * vm->scale_y;
     }
-
-    const AnmVm* position_root = vm;
-    while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0) {
-        const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
-        const uint32_t mode = (parent->flags3 >> 22) & 7;
-        const float factor = (mode == 2 || mode == 4) ? 0.5f : 1.0f;
-        const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
-        center_x += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
-        center_y += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
-        position_root = parent;
+    if (render_type<=3) {
+        xx*=vm->scale_extra_x;xy*=vm->scale_extra_x;
+        yx*=vm->scale_extra_y;yy*=vm->scale_extra_y;
     }
-    if ((position_root->flags3 & 0x300000u) == 0x200000u) {
-        center_x += 224.0f;
-        center_y += 16.0f;
+
+    if(render_type<=3) {
+        float position[3];flat_scene_position(vm,position);
+        center_x=position[0];center_y=position[1];
+    } else {
+        const AnmVm* position_root = vm;
+        while (position_root->parent != nullptr && (position_root->flags3 & 0x40000u) == 0) {
+            const AnmVm* parent = static_cast<const AnmVm*>(position_root->parent);
+            const uint32_t mode = (parent->flags3 >> 22) & 7;
+            const float factor = (mode == 2 || mode == 4) ? 0.5f : 1.0f;
+            const float* parent_offset = reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(parent) + 0x4e4);
+            center_x += (parent->pos_x + parent->extra_x + parent_offset[0]) * factor;
+            center_y += (parent->pos_y + parent->extra_y + parent_offset[1]) * factor;
+            position_root = parent;
+        }
+        if ((position_root->flags3 & 0x300000u) == 0x200000u) {
+            center_x += 224.0f;center_y += 16.0f;
+        }
     }
 
     if (vm->parent != nullptr && (vm->flags3 & 0x40000u) == 0) {
@@ -1020,6 +1091,10 @@ void anm_vm_corners(const AnmVm* vm, float corners[4][2])
         xy *= parent->scale_x;
         yx *= parent->scale_y;
         yy *= parent->scale_y;
+        if (render_type<=3) {
+            xx*=parent->scale_extra_x;xy*=parent->scale_extra_x;
+            yx*=parent->scale_extra_y;yy*=parent->scale_extra_y;
+        }
     }
 
     for (int i = 0; i < 4; ++i) {
@@ -1188,6 +1263,7 @@ void anm_vm_reset(AnmVm* vm)
     vm->pos_y = 0.0f;
     vm->pos_z = 0.0f;
     vm->rot_z = 0.0f;
+    vm->rot_a = vm->rot_b = 0.0f;
     vm->rot_x = 0.0f;
     vm->rot_y = 0.0f;
     vm->origin_x = vm->origin_y = 0.0f;
@@ -1196,7 +1272,8 @@ void anm_vm_reset(AnmVm* vm)
     vm->uv_velocity_u = vm->uv_velocity_v = 0.0f;
     vm->scale_x = 1.0f;
     vm->scale_y = 1.0f;
-    vm->scale_z = 1.0f;
+    vm->scale_extra_x = vm->scale_extra_y = 1.0f;
+    vm->scale_velocity_x = vm->scale_velocity_y = 0;
     *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(vm) + 0x4d8) = 1.0f;
     *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(vm) + 0x4dc) = 3.1415927410125732f;
     *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(vm) + 0x4e0) = 0x10000;
@@ -1306,6 +1383,7 @@ void anm_vm_set_script(AnmVm* vm, AnmResource* res, int script_id)
             vm->script = &res->scripts[i];
     vm->script_cursor = 0;
     vm->time = 0;
+    vm->expr_stack_a2 = 0;
     vm->flags2 |= 1u;
     anm_vm_update(vm);
 }
@@ -1629,7 +1707,8 @@ void anm_execute_script(AnmVm* vm)
             vm->saved_cursor = vm->script_cursor;
             vm->saved_time = static_cast<int32_t>(vm->time);
             vm->script_cursor = destination + entry->length;
-            vm->time = entry->time;
+            vm->expr_stack_a2 = static_cast<float>(entry->time);
+            vm->time = static_cast<uint32_t>(entry->time);
             vm->flags2 |= 1u;
         }
     }
@@ -1666,6 +1745,14 @@ void anm_execute_script(AnmVm* vm)
             if (instr->type == 4)
                 vm->flags2 &= ~1u;
             vm->flags2 |= 0x4000u;
+            // 478580 -> 409750: the wait subtracts one step; 405990 adds it
+            // back after motion/interpolation, leaving the stream time held.
+            if(stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f) {
+                --vm->time;vm->expr_stack_a2-=1;
+            } else {
+                vm->expr_stack_a2-=stage::g_speed_scale;
+                vm->time=uint32_t(int32_t(vm->expr_stack_a2));
+            }
             return;
 
         case 0:
@@ -1679,13 +1766,15 @@ void anm_execute_script(AnmVm* vm)
             if (mask & 1)
                 delta = anm_vm_get_var(vm, delta);
             vm->time -= delta;
+            vm->expr_stack_a2 -= static_cast<float>(delta);
             vm->script_cursor += length;
             break;
         }
 
         case 7:  // 从中断返回到原先等待位置和时间
             vm->script_cursor = vm->saved_cursor;
-            vm->time = vm->saved_time;
+            vm->expr_stack_a2 = static_cast<float>(vm->saved_time);
+            vm->time = static_cast<uint32_t>(vm->saved_time);
             break;
 
         case 100: // 0x64 赋值：payload[0..3] 变量 id，payload[4..7] 值
@@ -1818,6 +1907,7 @@ void anm_execute_script(AnmVm* vm)
             if (count > 0) {
                 vm->script_cursor = *reinterpret_cast<const int32_t*>(payload + 4);
                 vm->time = *reinterpret_cast<const int32_t*>(payload + 8);
+                vm->expr_stack_a2 = static_cast<float>(static_cast<int32_t>(vm->time));
             } else vm->script_cursor += length;
             break;
         }
@@ -1825,6 +1915,7 @@ void anm_execute_script(AnmVm* vm)
         case 200: // 跳转：两个 int32，目标字节偏移与目标脚本时间
             vm->script_cursor = *reinterpret_cast<const int32_t*>(payload);
             vm->time = *reinterpret_cast<const int32_t*>(payload + 4);
+            vm->expr_stack_a2 = static_cast<float>(static_cast<int32_t>(vm->time));
             break;
 
         case 204: // 整数不等时跳转；effect142随机选择纵向镜像。
@@ -1836,6 +1927,7 @@ void anm_execute_script(AnmVm* vm)
             if (left != right) {
                 vm->script_cursor = *reinterpret_cast<const int32_t*>(payload + 8);
                 vm->time = *reinterpret_cast<const int32_t*>(payload + 12);
+                vm->expr_stack_a2 = static_cast<float>(static_cast<int32_t>(vm->time));
             } else vm->script_cursor += length;
             break;
         }
@@ -1883,7 +1975,7 @@ void anm_execute_script(AnmVm* vm)
             AnmVm* emitted = anm_vm_alloc(res);
             anm_vm_bind_script(emitted, res, script_id);
             emitted->draw_layer = vm->draw_layer;
-            emitted->flags3 |= 0x1000 | (vm->flags3 & 0x8000000u);
+            emitted->flags3 = (emitted->flags3 & ~0x8000000u) | 0x1000u | (vm->flags3 & 0x8000000u);
             emitted->extra_x = vm->extra_x;
             emitted->extra_y = vm->extra_y;
             emitted->extra_z = vm->extra_z;
@@ -2049,6 +2141,13 @@ void anm_execute_script(AnmVm* vm)
             vm->script_cursor += length;
             break;
         }
+
+        case 416: // 47d8b0：每帧缩放增量，和角速度共用47bce0积分。
+            vm->scale_velocity_x=float_argument(vm,payload,mask,0);
+            vm->scale_velocity_y=float_argument(vm,payload,mask,1);
+            vm->flags3|=0x4000000u;
+            vm->script_cursor+=length;
+            break;
 
         case 302: // flags2 的渲染类型位 0x7c000000 = value << 26
         {
@@ -2220,6 +2319,18 @@ void anm_execute_script(AnmVm* vm)
                          ((*reinterpret_cast<const uint32_t*>(payload) << 4) & 0x70u);
             vm->script_cursor += length;
             break;
+
+        case 438: // 478580 class55：直接选坐标原点，不改变图层或缩放模式。
+            vm->flags3=(vm->flags3&~0x300000u)|((uint32_t(payload[0])<<20)&0x300000u);
+            vm->script_cursor+=length;
+            break;
+
+        case 314: { // 478580 class13: rotate local position by the root's Z angle.
+            uint32_t value=*reinterpret_cast<const uint32_t*>(payload);
+            if(mask&1)value=anm_vm_get_var(vm,value);
+            vm->flags3=(vm->flags3&~0x2000000u)|((value<<25)&0x2000000u);
+            vm->script_cursor+=length;break;
+        }
 
         case 424: // 原case0x29：运动学调用方按切线设置Z角。
             vm->flags3 = (vm->flags3 & ~0x200u) | ((static_cast<uint32_t>(payload[0]) & 1u) << 9);
@@ -2482,10 +2593,37 @@ static void update_vm_self(AnmVm* vm)
     if(vm->callback_index==7 && extra_maple_update(vm)) {
         vm->script_cursor=-1;vm->flags2&=~1u;return;
     }
+    // 478580: stopped/deleted scripts bypass clocks, motion and interpolation.
+    if (vm->script_cursor<0) return;
     anm_execute_script(vm);
+    if (vm->script_cursor<0) return;
 
-    if (vm->flags2 & 0x8000u)
-        stage_background_apply_camera_delta(vm);
+    // 47bce0 runs before interpolation; 415/416/425/426 share this flag.
+    if (vm->flags3&0x4000000u) {
+        const float dt=stage::g_speed_scale;
+        const float* angular=reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm)+0x48);
+        float* rotation=&vm->rot_a;
+        for (int axis=0;axis<3;++axis) if (angular[axis]!=0) {
+            float angle=rotation[axis]+angular[axis]*dt;
+            int wraps=0;
+            while(angle>3.1415927410125732f){angle-=6.2831854820251465f;if(wraps++>=0x21)break;}
+            while(angle< -3.1415927410125732f){angle+=6.2831854820251465f;if(wraps++>=0x21)break;}
+            rotation[axis]=angle;vm->flags2|=4;
+        }
+        if(vm->scale_velocity_x!=0){vm->scale_x+=vm->scale_velocity_x*dt;vm->flags2|=8;}
+        if(vm->scale_velocity_y!=0){vm->scale_y+=vm->scale_velocity_y*dt;vm->flags2|=8;}
+        if(vm->uv_velocity_u!=0) {
+            vm->uv_offset_u+=vm->uv_velocity_u*dt;
+            if(vm->uv_offset_u>=2)vm->uv_offset_u-=2;else if(vm->uv_offset_u<0)vm->uv_offset_u+=2;
+        }
+        if(vm->uv_velocity_v!=0) {
+            vm->uv_offset_v+=vm->uv_velocity_v*dt;
+            if(vm->uv_offset_v>=2)vm->uv_offset_v-=2;else if(vm->uv_offset_v<0)vm->uv_offset_v+=2;
+        }
+    }
+
+    // 478580 tail: flags2 bit0x8000 folds the STD camera delta into +0x5f0..8.
+    if (vm->flags2 & 0x8000u) stage_background_apply_camera_delta(vm);
 
     // sub_47c750：每帧从插值块把当前值算回 VM 字段（位置/旋转/缩放）。
     uint8_t* raw = reinterpret_cast<uint8_t*>(vm);
@@ -2544,18 +2682,6 @@ static void update_vm_self(AnmVm* vm)
         color_interp_apply(raw + 0xe8, &vm->color);
     if (*reinterpret_cast<int32_t*>(raw + 0x314) != 0)
         color_interp_apply(raw + 0x2c4, &vm->color_alt);
-    if (vm->flags3 & 0x4000000u)
-    {
-        const float* angular = reinterpret_cast<const float*>(raw + 0x48);
-        vm->rot_a += angular[0];
-        vm->rot_b += angular[1];
-        vm->rot_z += angular[2];
-    }
-    vm->uv_offset_u += vm->uv_velocity_u;
-    vm->uv_offset_v += vm->uv_velocity_v;
-    vm->uv_offset_u -= std::floor(vm->uv_offset_u);
-    vm->uv_offset_v -= std::floor(vm->uv_offset_v);
-
     const float cos_z = std::cos(vm->rot_z);
     const float sin_z = std::sin(vm->rot_z);
     const float sx = vm->scale_x;
@@ -2566,13 +2692,19 @@ static void update_vm_self(AnmVm* vm)
     m[1] = sin_z * sx;
     m[4] = -sin_z * sy;
     m[5] = cos_z * sy;
-    m[10] = vm->scale_z;
+    m[10] = 1;
     m[12] = vm->pos_x;
     m[13] = vm->pos_y;
     m[14] = vm->pos_z;
     m[15] = 1.0f;
-    if ((vm->flags2 & 0x4000u) == 0)
-        vm->time++;
+    // 405990 uses MOVSS/ADDSS here: the fractional accumulator is preserved.
+    const float speed = stage::g_speed_scale;
+    if (speed > 0.99f && speed < 1.01f) {
+        ++vm->time;vm->expr_stack_a2+=1;
+    } else {
+        vm->expr_stack_a2 += speed;
+        vm->time = static_cast<uint32_t>(static_cast<int32_t>(vm->expr_stack_a2));
+    }
 }
 
 

@@ -58,7 +58,7 @@ struct EclThread {
 
 // 脚本 VM（原版 0x0048b3a0）：按时间/难度执行 id < 0x5f 的指令，遇到 id >= 0x5f 时
 // 转调 owner 的 vtable[0]（敌机为 0x00430d30 经 adjustor thunk，ECX = owner+0x122c）。
-// 返回 0 = 正常继续；-1 = 线程结束（sub_index/offset 已置 -1）。
+// 返回 0 = 正常继续；-1 = 线程结束；1 = ECL566请求执行敌机死亡流程。
 int32_t script_vm_run(EclThread* thread, float delta);
 // 难度位（enemy+0x1030 = 1 << difficulty）。
 enum Difficulty : int32_t {
@@ -150,7 +150,8 @@ struct EclHostTable {
 // 具体类未定位。端口里用一个独立小对象承载：vtable + 当前线程 + 变量 A..H + 自身坐标。
 // 敌机的 op_create_enemy 用 enemy+0x122c 的宿主区，关卡脚本没有敌机字段，
 // 所以关卡的创建敌机由 stage_exec 直接按指令参数构造 SpawnArgs。
-void script_tree_run(EclThread* thread, float delta);
+// True requests the owner's death path; callers destroy/restart the tree after it unwinds.
+bool script_tree_run(EclThread* thread, float delta);
 void script_tree_destroy(EclThread* thread);
 
 }  // namespace stage

@@ -19,6 +19,7 @@
 namespace stage {
 namespace {
 AnmVm* g_frame;
+AnmVm* g_extend;
 AnmVm* g_rank;
 AnmVm* g_character;
 AnmVm* g_lives[7];
@@ -38,15 +39,15 @@ int g_boss_spell_count;
 AnmVm* create(AnmResource* resource, int script, bool second_queue) {
     AnmVm* vm = anm_vm_alloc(resource);
     vm->node_flags = second_queue ? 4u : 0u;
-    anm_vm_set_script(vm, resource, script);
+    anm_vm_bind_script(vm, resource, script);
+    vm->flags3 |= 0x1000u;
+    anm_vm_update(vm);
     anm_queue_add(vm);
     return vm;
 }
 
-void set_gauge(AnmVm** cells, int value, int fragments, int maximum, int* previous) {
-    if (value == previous[0] && fragments == previous[1] && maximum == previous[2])
-        return;
-    // 0x441f10 / 0x4420e0：七格中的已取得/碎片/空格/超过上限四种中断。
+void set_gauge(AnmVm** cells, int value, int fragments, int maximum) {
+    // 0x441f10 / 0x4420e0：写 label（494），七格中的已取得/碎片/空格/超过上限四种中断。
     for (int i = 0; i < 7; ++i) {
         cells[i]->extra_x = static_cast<float>(7 - maximum) * 28.0f;
         int label = i < value ? 2 : (i == value && i < maximum ? 7 + fragments : 3);
@@ -54,9 +55,6 @@ void set_gauge(AnmVm** cells, int value, int fragments, int maximum, int* previo
             label = 5;
         anm_set_label(cells[i], label);
     }
-    previous[0] = value;
-    previous[1] = fragments;
-    previous[2] = maximum;
 }
 
 void assign_icon(AnmVm* root, int first, int second, int sprite) {
@@ -191,6 +189,29 @@ void hud_boss_segment(int boss,int index,float ratio,uint32_t color) {
 }
 void hud_boss_spells(int count) {g_boss_spell_count=count;}
 
+void hud_refresh_lives() {
+    set_gauge(g_lives,g_status.lives,g_status.unk_070,g_status.lives_max);
+    g_previous_lives[0]=g_status.lives;g_previous_lives[1]=g_status.unk_070;g_previous_lives[2]=g_status.lives_max;
+}
+void hud_refresh_bombs() {
+    set_gauge(g_bombs,g_status.unk_07c,g_status.unk_080,g_status.unk_088);
+    g_previous_bombs[0]=g_status.unk_07c;g_previous_bombs[1]=g_status.unk_080;g_previous_bombs[2]=g_status.unk_088;
+}
+
+void hud_show_extend() {
+    // 4575f0 / 445a80 case 5：405bf0 创建 front53 入第一队列并存入 stage+0xbc。
+    // 释放旧通知，再新建并推进初帧（478580），与原版替代语义一致。
+    anm_vm_free(g_extend);
+    AnmResource* front=anm_get(5,"front.anm");
+    g_extend=anm_vm_alloc(front);anm_vm_bind_script(g_extend,front,53);
+    g_extend->flags3|=0x1000u;
+    g_extend->rot_z=0;
+    g_extend->extra_x=0;g_extend->extra_y=0;g_extend->extra_z=0;
+    anm_vm_update(g_extend);
+    g_extend->node_flags=0;
+    anm_queue_add(g_extend);anm_manage_vm(g_extend,&g_extend);
+}
+
 void hud_create(int difficulty, int player) {
     g_boss_spell_count=0;
     // 0x43a8b0：front框、七命/七Bomb、难度及人物标识均由原ANM脚本生成。
@@ -201,14 +222,16 @@ void hud_create(int difficulty, int player) {
     for (int i = 0; i < 7; ++i) {
         g_lives[i] = create(front, 32 + i, true);
         g_bombs[i] = create(front, 40 + i, true);
+        g_lives[i]->flags3&=~0x30000u;g_bombs[i]->flags3&=~0x30000u;
+        anm_manage_vm(g_lives[i],&g_lives[i]);anm_manage_vm(g_bombs[i],&g_bombs[i]);
     }
+    hud_refresh_lives();hud_refresh_bombs();
     AnmResource* ascii = *reinterpret_cast<AnmResource**>(reinterpret_cast<uint8_t*>(text_manager()) + 0x19260);
     for (int i = 0; i < 2; ++i) {
         g_timer_positions[i] = create(ascii, 2 + i, false);
         g_timer_positions[i]->flags2 &= ~2u;
         g_timer_positions[i]->flags3 &= ~0x300000u;
     }
-    g_previous_lives[0] = g_previous_bombs[0] = -1;
     g_high_score = card_profile_high_score(player, difficulty);
     const bool playback=replay_mode()==ReplayMode::Playback;
     if(session().mode==GameMode::SpellPractice || (playback && (replay_info().mode_flags&2)))
@@ -246,17 +269,15 @@ void hud_refresh_cards() {
 }
 
 void hud_update() {
+    // Explicit pickup events always write labels; polling also observes the
+    // port's direct stock writes in bomb use, death and continue handling.
+    if(g_status.lives!=g_previous_lives[0] || g_status.unk_070!=g_previous_lives[1] || g_status.lives_max!=g_previous_lives[2])hud_refresh_lives();
+    if(g_status.unk_07c!=g_previous_bombs[0] || g_status.unk_080!=g_previous_bombs[1] || g_status.unk_088!=g_previous_bombs[2])hud_refresh_bombs();
     update_boss_hud();
-    set_gauge(g_lives, g_status.lives, g_status.unk_070, g_status.lives_max, g_previous_lives);
-    set_gauge(g_bombs, g_status.unk_07c, g_status.unk_080, g_status.unk_088, g_previous_bombs);
     anm_vm_update(g_frame);
     anm_vm_update(g_rank);
     anm_vm_update(g_character);
     for (AnmVm* vm : g_timer_positions) anm_vm_update(vm);
-    for (int i = 0; i < 7; ++i) {
-        anm_vm_update(g_lives[i]);
-        anm_vm_update(g_bombs[i]);
-    }
     if (g_active) {
         anm_vm_update(g_active);
         cooldown_visual(g_active, 2, 3, card_manager()->special);
@@ -315,6 +336,7 @@ void hud_render() {
 }
 
 void hud_destroy() {
+    anm_vm_free(g_extend);g_extend=nullptr;
     for(auto& ring:g_boss_rings)for(auto*& vm:ring){anm_vm_free(vm);vm=nullptr;}
     for(auto*& vm:g_boss_stars){anm_vm_free(vm);vm=nullptr;}
     anm_vm_free(g_frame);

@@ -60,7 +60,7 @@ static_assert(sizeof(AnmResource) == 0x13c, "AnmResource size");
 
 // VM 绘制类型：取自 (vm->flags2 +0x534) >> 26 & 0x1f（sub_481210 的 switch）。
 enum AnmVmRenderType : uint32_t {
-    ANM_TYPE_00 = 0x00,  // 旋转 quad（sub_47e8f0 + sub_47dce0）
+    ANM_TYPE_00 = 0x00,  // 轴对齐 quad；不使用旋转角（47e8f0 + 47dce0）
     ANM_TYPE_01 = 0x01,  // 旋转 quad（sub_47ed50 + sub_47dce0）
     ANM_TYPE_02 = 0x02,  // 同 00（uVar3=0）
     ANM_TYPE_03 = 0x03,  // 同 01
@@ -113,7 +113,7 @@ struct AnmVm {
     uint8_t  pad_048[0x0c];      // +0x048
     float    scale_x;            // +0x054
     float    scale_y;            // +0x058
-    float    scale_z;            // +0x05c
+    float    scale_extra_x;      // +0x05c 原版第二套X缩放
     // +0x060 原版是第二套变换矩阵分量（sub_47d8b0 写 +0x064/+0x068）；
     // 本层把当前精灵的 UV 存进这段（anm_set_sprite 写入，绘制时取用）。
     float    uv[4];              // +0x060 u0,v0,u1,v1
@@ -134,7 +134,10 @@ struct AnmVm {
     float    uv_velocity_v;      // +0x3d0 op426
     float    matrix_src[16];     // +0x3d4 变换源（16 float）
     float    matrix_world[16];   // +0x414 传给 D3DTS_WORLD 的世界矩阵
-    uint8_t  pad_454[0x40];      // +0x454
+    float    scale_velocity_x;   // +0x454 端口保存原版+0x64
+    float    scale_velocity_y;   // +0x458 端口保存原版+0x68
+    float    scale_extra_y;      // +0x45c 端口保存原版+0x60第二Y缩放
+    uint8_t  pad_460[0x34];      // +0x460
     int32_t  label;              // +0x494 等待的 label（sub_488be0 写入，解释器命中 op5 后清零）
     // +0x498 原版未用；本层存当前脚本表项（op 300 设置，绘制时取段号/贴图）。
     const AnmScriptEntry* script; // +0x498
@@ -193,6 +196,10 @@ static_assert(offsetof(AnmVm, label) == 0x494, "AnmVm::label");
 static_assert(offsetof(AnmVm, color) == 0x524, "AnmVm::color");
 static_assert(offsetof(AnmVm, flags2) == 0x534, "AnmVm::flags2");
 static_assert(offsetof(AnmVm, handle) == 0x544, "AnmVm::handle");
+static_assert(offsetof(AnmVm, scale_velocity_x) == 0x454, "AnmVm::scale_velocity_x");
+static_assert(offsetof(AnmVm, scale_extra_y) == 0x45c, "AnmVm::scale_extra_y");
+static_assert(offsetof(AnmVm, parent) == 0x5c0, "AnmVm::parent");
+static_assert(offsetof(AnmVm, extra_x) == 0x5f0, "AnmVm::extra_x");
 
 // 全局 ANM 管理器（原版 DAT_0051f65c 是包含它的大对象，字段按字节偏移给出）。
 struct AnmManager {

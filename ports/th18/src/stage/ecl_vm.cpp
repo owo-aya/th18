@@ -6,6 +6,7 @@
 #include <list>
 #include <string>
 #include "gameplay/spell.h"
+#include "gameplay/pickups.h"
 
 #include "core/thread.h"
 #include "presentation/anm.h"
@@ -70,26 +71,13 @@ struct EnemyBullet {
     int render_bucket;
 };
 static constexpr int bullet_render_buckets[]={5,5,5,5,3,3,3,3,4,4,4,3,4,4,4,4,3,3,1,1,2,2,2,1,1,2,2,2,2,1,1,3,0,2,5,4,4,3,2,3,3,3,3,2,1,1,0,0};
-struct StagePickup {float x,y,vx,vy; int kind,value; int pull_state; AnmVm* vm;int delay;float pull_speed;};
 static std::list<EnemyBullet> g_enemy_bullets;
-static std::vector<StagePickup> g_pickups;
 static std::list<AnmVm*> g_cancel_effects;
 static AnmResource* g_bullet_anm;
 static AnmResource* g_effect_anm;
 static void bullets_update();
 static Thread* g_bullet_logic;
 static Thread* g_bullet_render;
-static Thread* g_pickup_render;
-static ThreadStatus pickups_render_task(void*) {
-    gfx_select_camera(3);
-    for (auto& p:g_pickups) {
-        if (p.delay>0) continue;
-        // 446d60 keeps the item's world position in extra, separate from ANM motion.
-        p.vm->extra_x=p.x+224; p.vm->extra_y=p.y+16;
-        anm_draw_vm(p.vm);
-    }
-    return THREAD_CONTINUE;
-}
 static ThreadStatus bullets_logic_task(void*) {
     if(stage_session_started() && !shop_active())bullets_update();
     return THREAD_CONTINUE;
@@ -120,9 +108,15 @@ static ThreadStatus bullets_render_task(void*) {
     return THREAD_CONTINUE;
 }
 static void bullet_fire(Enemy& self,int slot);
-static void pickup_create(float x,float y,int kind,int value);
+static void pickup_create(float x,float y,int kind);
 static void enemy_defeat(Enemy& self);
 static void enemy_drop_items(Enemy& self);
+static void reset_drop_timer(Enemy& e) {
+    // 42d110/42d180/42d040 share the native drop-bonus clock reset.
+    auto* timer=reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x62e4);
+    if((timer[4]&1)==0){timer[3]=0;timer[4]|=1;}
+    timer[0]=-1;timer[1]=0;*reinterpret_cast<float*>(timer+2)=0;
+}
 static bool enemy_phase_change(Enemy& self);
 static bool enemy_time_change(Enemy& self);
 static void enemy_restart(Enemy& self,const char* sub);
@@ -364,6 +358,7 @@ Enemy* create_enemy(const char* sub_name, const SpawnArgs& args) {
     *reinterpret_cast<int32_t*>(base + 0x12bc) = args.arg2;
     enemy->score = args.score;
     *reinterpret_cast<float*>(base+0x62f8)=32;*reinterpret_cast<float*>(base+0x62fc)=32;
+    reset_drop_timer(*enemy);
     enemy->state6318=-1;
     enemy->health = args.health;
     enemy->drop_kind=args.drop_kind;
@@ -511,7 +506,7 @@ EnemyManager* create_enemy_manager(const char* ecl_name) {
     extra_effects_start();
     g_bullet_logic=thread_create(bullets_logic_task);thread_set_priority(g_bullet_logic,0x1d);thread_enqueue_logic(g_bullet_logic);
     g_bullet_render=thread_create(bullets_render_task);thread_set_priority(g_bullet_render,0x26);thread_enqueue_render(g_bullet_render);
-    g_pickup_render=thread_create(pickups_render_task);thread_set_priority(g_pickup_render,0x21);thread_enqueue_render(g_pickup_render);
+    pickups_create();
 
     manager->task_logic = thread_create(enemy_manager_update);
     thread_set_priority(manager->task_logic, 0x1b);
@@ -529,9 +524,8 @@ void destroy_enemy_manager(EnemyManager* manager) {
     if (manager == nullptr) return;
     while (manager->enemy_head != nullptr) delete_enemy(manager->enemy_head->self);
     extra_effects_stop();
-    thread_remove(g_bullet_logic);thread_remove(g_bullet_render);thread_remove(g_pickup_render);
+    thread_remove(g_bullet_logic);thread_remove(g_bullet_render);pickups_destroy();
     for(auto& b:g_enemy_bullets)anm_vm_free(b.vm);g_enemy_bullets.clear();
-    for(auto& p:g_pickups)anm_vm_free(p.vm);g_pickups.clear();
     for(auto* vm:g_cancel_effects)if(vm)anm_vm_free(vm);g_cancel_effects.clear();
     thread_remove(manager->task_logic);
     thread_remove(manager->task_render);
@@ -608,7 +602,7 @@ int32_t enemy_update_presentation(Enemy& e) {
             anm_vm_update(vm);vm->node_flags=8;anm_queue_add(vm);e.visual[0]=vm;anm_manage_vm(vm,&e.visual[0]);e.primary_anim_state=direction;
         }
     }
-    script_tree_run(e.thread,g_speed_scale);
+    if(script_tree_run(e.thread,g_speed_scale)){enemy_defeat(e);return 1;}
     while(e.pending_sub){const char* sub=e.pending_sub;e.pending_sub=nullptr;enemy_restart(e,sub);}
     if((e.thread->sub_index<0 && e.thread->children.empty()) || (e.flag&0x2000000))return 1;
     if(e.special_callback==4) {
@@ -689,9 +683,15 @@ int32_t enemy_update_presentation(Enemy& e) {
     if(e.damage_wait>0)--e.damage_wait;
     e.phase_fraction+=g_speed_scale;e.phase_time=int32_t(e.phase_fraction);
     auto* raw=reinterpret_cast<uint8_t*>(&e);
+    *reinterpret_cast<int32_t*>(raw+0x62f0)=0;
     *reinterpret_cast<int32_t*>(raw+0x62e4)=*reinterpret_cast<int32_t*>(raw+0x62e8);
-    *reinterpret_cast<float*>(raw+0x62ec)+=g_speed_scale;
-    *reinterpret_cast<int32_t*>(raw+0x62e8)=int32_t(*reinterpret_cast<float*>(raw+0x62ec));
+    if(g_speed_scale>0.99f && g_speed_scale<1.01f) {
+        ++*reinterpret_cast<int32_t*>(raw+0x62e8);
+        *reinterpret_cast<float*>(raw+0x62ec)+=1;
+    } else {
+        *reinterpret_cast<float*>(raw+0x62ec)+=g_speed_scale;
+        *reinterpret_cast<int32_t*>(raw+0x62e8)=int32_t(*reinterpret_cast<float*>(raw+0x62ec));
+    }
     return 0;
 }
 
@@ -771,11 +771,11 @@ static void bullet_cancel(EnemyBullet& b,int kind) {
 void cancel_bullet_point(float x,float y,int kind) {
     if(kind!=0 && x+32>-192 && x-32<192 && y+32>0 && y-32<448) {
         const int n=++g_cancel_count;
-        if(kind==1)pickup_create(x,y,9,1);
+        if(kind==1)pickup_create(x,y,9);
         else if(kind==4) {
             const int mod=n%5;
             const bool coin=mod==0 || (mod==2 && (rng_next()&1u)==0) || (mod==4 && rng_next()%3u==0);
-            pickup_create(x,y,coin?2:9,1);
+            pickup_create(x,y,coin?2:9);
         }
     }
 }
@@ -855,24 +855,14 @@ void miko_flash_cancel() {
         index+=1+rng_next()%3;
     }
 }
-static void pickup_create(float x,float y,int kind,int value) {
-    if(kind==0)return;
+static void pickup_create(float x,float y,int kind) {
     float angle=-1.57079637f;if(kind==9)angle+=rng_float_pm1()*0.17453292f;
-    spawn_item(kind,x,y,angle,2.2f,0);
-    g_pickups.back().value=value;
-}
-void spawn_item(int32_t kind,float x,float y,float angle,float speed,int32_t delay) {
-    static constexpr int scripts[]={-1,112,113,114,115,116,117,118,119,120,121,122,123,124,125,-1,3,4,5,6};
-    if (kind==15) kind=6;
-    const bool cancel_point=kind>=9 && kind<=14;
-    if (!cancel_point) x=std::clamp(x,-192.0f,192.0f);
-    AnmVm* vm=anm_vm_alloc(g_bullet_anm);
-    anm_vm_bind_script(vm,g_bullet_anm,scripts[kind]);anm_vm_update(vm);
-    g_pickups.push_back({x,y,std::cos(angle)*speed,std::sin(angle)*speed,kind,1,cancel_point?2:1,vm,delay,0});
+    const float position[3]={x,y,0};
+    spawn_item(kind,position,angle,2.2f,0);
 }
 static void enemy_drop_items(Enemy& e) {
-    pickup_create(e.x,e.y,e.drop_kind,1);
-    e.drop_kind=0;
+    const float position[3]={e.x,e.y,e.z};
+    if(e.drop_kind!=0)spawn_item(e.drop_kind,position,-1.57079637f,2.2f,0);
     auto* drop=reinterpret_cast<uint8_t*>(&e)+0x623c;
     auto* counts=reinterpret_cast<int32_t*>(drop+4);
     float angle=rng_float_pm1()*3.14159265f;
@@ -884,12 +874,16 @@ static void enemy_drop_items(Enemy& e) {
         if(duration!=0 && time<duration && bonus>0)count+=bonus-bonus*time/duration;
         for(int n=0;n<count;++n) {
             const float factor=0.5f+rng_float01()*0.5f;
-            spawn_item(kind,e.x+std::cos(angle)*width*factor,e.y+std::sin(angle)*height*factor,-1.57079637f,2.2f,0);
-            angle=std::remainder(angle+1.57079637f+rng_float_pm1()*0.785398185f,6.283185307f);
+            const float drop_position[3]={e.x+std::cos(angle)*width*factor,e.y+std::sin(angle)*height*factor,e.z};
+            spawn_item(kind,drop_position,-1.57079637f,2.2f,0);
+            angle=angle+1.57079637f+rng_float_pm1()*3.14159265f*0.25f;
+            if(angle>3.14159265f)angle-=6.283185307f;
+            if(angle<-3.14159265f)angle+=6.283185307f;
         }
     }
-    const float pos[3]={e.x,e.y,0};card_manager_on_drops(pos,counts);
+    card_manager_on_drops(position,counts);
     std::memset(counts,0,0x50);
+    e.drop_kind=0;
 }
 static void enemy_defeat(Enemy& e) {
     // 430240：死亡效果与死亡 ECL 在对象析构前执行，效果不依附于 visual 槽。
@@ -913,7 +907,7 @@ static void enemy_restart(Enemy& e,const char* sub) {
     script_tree_destroy(e.thread);e.thread=new EclThread{};e.thread->owner=&e;
     thread_start(e.thread,e.ecl_res,sub);e.thread->rank_mask=uint8_t(1u<<g_difficulty);
     e.phase_time=0;e.phase_fraction=0;
-    script_tree_run(e.thread,g_speed_scale);
+    if(script_tree_run(e.thread,g_speed_scale)){enemy_defeat(e);e.flag|=0x2000000u;}
 }
 static bool enemy_time_change(Enemy& e) {
     for(auto& interrupt:e.interrupts) {
@@ -1167,76 +1161,6 @@ static void bullets_update() {
         if(b.cancel_state!=0 && ended)b.removed=true;
         const float half_width=b.vm->sprite_w*b.size_scale*0.5f,half_height=b.vm->sprite_h*b.size_scale*0.5f;
         if(b.removed || (!(b.effect_flags&0x100) && (b.x+half_width<=-192 || b.x-half_width>=192 || b.y+half_height<=-64 || b.y-half_height>=448))){anm_vm_free(b.vm);g_enemy_bullets.erase(current);}
-    }
-    for(size_t i=0;i<g_pickups.size();) {
-        auto& p=g_pickups[i];if(p.delay>0){--p.delay;++i;continue;}
-        float dx=g_player->x-p.x,dy=g_player->y-p.y,d=std::sqrt(dx*dx+dy*dy);
-        const auto* player=reinterpret_cast<const uint8_t*>(g_player);
-        const float pull_speed=*reinterpret_cast<const float*>(player+0x47988);
-        const float pickup_radius=*reinterpret_cast<const float*>(player+0x4798c);
-        const float pull_radius=*reinterpret_cast<const float*>(player+(g_player->focus_mode?0x47990:0x47994));
-        const float line=*reinterpret_cast<const float*>(player+0x47998);
-        const bool auto_collect=(g_player->state!=2 && g_player->state!=4 && g_player->y<line) ||
-            (bomb_active() && bomb_elapsed_frames()<60) || msg_active();
-        bool outside=false;
-        if(p.pull_state==1) {
-            if(auto_collect){p.pull_state=3;p.pull_speed=pull_speed;}
-            else {
-                p.x+=p.vx*g_speed_scale;p.y+=p.vy*g_speed_scale;
-                p.vy+=0.03f*g_speed_scale;
-                // Ordinary drops stop drifting sideways at their apex.
-                if(p.vy>=0)p.vx=0;
-                if(p.vy>2)p.vy=2;
-                outside=p.y>472 || std::fabs(p.x)>=200;
-            }
-        } else if(p.pull_state==2) {
-            p.x+=p.vx*g_speed_scale;p.y+=p.vy*g_speed_scale;
-            p.vy+=0.03f*g_speed_scale;
-            if(p.vy>=0){p.pull_state=3;p.pull_speed=pull_speed;}
-            else outside=p.y>472 || std::fabs(p.x)>=200;
-        } else if(p.pull_state==4 && auto_collect){p.pull_state=3;p.pull_speed=pull_speed;}
-        if(p.pull_state==3 || p.pull_state==4) {
-            const float angle=g_player->x==p.x && g_player->y==p.y?1.57079637f:
-                std::atan2(g_player->y-p.y,g_player->x-p.x);
-            p.vx=std::cos(angle)*p.pull_speed;p.vy=std::sin(angle)*p.pull_speed;
-            p.x+=p.vx*g_speed_scale;p.y+=p.vy*g_speed_scale;
-            if(p.pull_speed<12)p.pull_speed+=0.2f;
-            // 4461f3: a hit cancels attraction; it must not follow the respawn jump.
-            if(g_player->state==4){p.pull_state=1;p.vx=p.vy=0;}
-        }
-        if(outside){anm_vm_free(p.vm);g_pickups.erase(g_pickups.begin()+i);continue;}
-        anm_vm_update(p.vm);
-        dx=g_player->x-p.x;dy=g_player->y-p.y;d=std::sqrt(dx*dx+dy*dy);
-        if(g_player->state!=2 && d<pickup_radius) {
-            if(p.kind==1){if(status_add_power(&g_status,p.value)){player_refresh_power_options();sound_play_se_at(13,g_player->x);}}
-            else if(p.kind==2) {
-                const float unit=g_difficulty==0?500.0f:1000.0f;
-                g_status.extend_score_1=std::min(std::max(int((g_status.money*unit+unit)*100),g_status.extend_score_2),g_status.extend_score_3);
-                const int value=g_status.extend_score_1/100;
-                int award;
-                if(g_player->y<=line || p.pull_state==3)award=(value-value%10)/10*10;
-                else award=((((value%10-value)*9/10)*int(g_player->y-line)/450+(value-value%10)*9/10)/10)*10;
-                if(award<1)award=10;
-                session().score+=award/10;++g_status.money;
-                ++*reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x44);
-                ++*reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x54);
-            }
-            else if(p.kind==3 || p.kind==8){if(status_add_power(&g_status,p.kind==3?g_status.power_step:g_status.power_max)){player_refresh_power_options();sound_play_se_at(13,g_player->x);}}
-            else if(p.kind==4)status_add_life_fragment(&g_status);
-            else if(p.kind==5)status_add_life(&g_status);
-            else if(p.kind==6)status_add_bomb_fragment(&g_status);
-            else if(p.kind==7)status_add_bomb(&g_status);
-            else if(p.kind>=9 && p.kind<=14)session().score+=g_status.money/10;
-            else if(p.kind>=16 && p.kind<=19)card_manager_acquire(static_cast<CardId>(p.kind-13),0);
-            sound_play_se_at(37,p.x);
-            anm_vm_free(p.vm);g_pickups.erase(g_pickups.begin()+i);
-        } else {
-            if(g_player->state!=2 && p.pull_state!=3 && p.pull_state!=4 &&
-               d<pull_radius && (p.kind<9 || p.kind>14)) {
-                p.pull_state=4;p.pull_speed=pull_speed/3;
-            }
-            ++i;
-        }
     }
 }
 
@@ -1579,10 +1503,19 @@ static int32_t enemy_exec(void* host) {
         auto* bounds=reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(&e)+0x620c);for(int n=0;n<4;++n)bounds[n]=arg_float(e,n);e.flag|=0x20000;break;
     }
     case 505:e.flag&=~0x20000u;break;
-    case 506:{auto* drop=reinterpret_cast<uint8_t*>(&e)+0x623c;std::memset(drop+4,0,0x50);*reinterpret_cast<int32_t*>(drop+0xa4)=0;*reinterpret_cast<int32_t*>(drop+0xac)=0;break;}
+    case 506: {
+        auto* drop=reinterpret_cast<uint8_t*>(&e)+0x623c;
+        std::memset(drop+4,0,0x50);*reinterpret_cast<int32_t*>(drop+0xa4)=0;
+        reset_drop_timer(e);break;
+    }
     case 507:*reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x623c+arg_int(e,0)*4)=arg_int(e,1);break;
     case 508:{auto* drop=reinterpret_cast<uint8_t*>(&e)+0x623c;*reinterpret_cast<float*>(drop+0xbc)=arg_float(e,0);*reinterpret_cast<float*>(drop+0xc0)=arg_float(e,1);break;}
-    case 509:enemy_drop_items(e);break;
+    case 509:
+        // 430d30 class36 skips ordinary drops in Spell Practice (42a990).
+        if(session().mode==GameMode::SpellPractice ||
+            (replay_mode()==ReplayMode::Playback && (replay_info().mode_flags&2)!=0))break;
+        [[fallthrough]];
+    case 562:enemy_drop_items(e);break; // class67: explicit dropItemsSp is unconditional.
     case 510:e.drop_kind=arg_int(e,0);break;
     case 511:e.health=e.health_max=e.health_previous=arg_int(e,0);break;
     case 513:e.phase_time=0;e.phase_fraction=0;break;
@@ -1612,7 +1545,7 @@ static int32_t enemy_exec(void* host) {
     }
     case 523: {
         auto* spell=spell_manager();
-        if((spell->flags&3)==3 && card_manager_owned(Kiseru))spawn_item(4,e.x,e.y,-1.57079637f,2.2f,60);
+        if((spell->flags&3)==3 && card_manager_owned(Kiseru))spawn_item(4,&e.x,-1.57079637f,2.2f,60);
         spell_end();break;
     }
     case 521:e.interrupts[arg_int(e,0)].time_sub=reinterpret_cast<const char*>(ins)+24;break;
@@ -1680,16 +1613,13 @@ static int32_t enemy_exec(void* host) {
     case 574: {
         auto* raw=reinterpret_cast<uint8_t*>(&e);
         *reinterpret_cast<int32_t*>(raw+0x62e0)=arg_int(e,0);
-        *reinterpret_cast<int32_t*>(raw+0x62e4)=-1;
-        *reinterpret_cast<int32_t*>(raw+0x62e8)=0;
-        *reinterpret_cast<float*>(raw+0x62ec)=0;
-        *reinterpret_cast<int32_t*>(raw+0x62f0)=0;
-        *reinterpret_cast<uint32_t*>(raw+0x62f4)|=1;break;
+        reset_drop_timer(e);break;
     }
     case 613:clear_enemy_bullets(0,224,10000,false);break;
     case 535: {int values[4];for(int i=0;i<4;i++)values[i]=arg_int(e,i+1);*vm_write_int(g_active_thread,ins,0)=values[g_difficulty<3?g_difficulty:3];break;}
     case 536: {float values[4];for(int i=0;i<4;i++)values[i]=arg_float(e,i+1);*vm_write_float(g_active_thread,ins,0)=values[g_difficulty<3?g_difficulty:3];break;}
     case 556:e.death_sub=reinterpret_cast<const char*>(ins)+20;break;
+    case 566:return 1; // 430f52: die -> 430240, after unwinding the executing ECL tree.
     case 800: {
         Enemy* target=find_enemy(g_enemy_manager->boss_id[arg_int(e,0)]);
         if(target)target->pending_sub=reinterpret_cast<const char*>(ins)+24;
@@ -1988,7 +1918,7 @@ int32_t script_vm_run(EclThread* t,float delta) {
             EclThread* previous=g_active_thread;g_active_thread=t;
             auto* host=*reinterpret_cast<EclHostTable**>(t->owner);const int status=host->exec(t->owner);g_active_thread=previous;
             if(status==-1 || t->owner->pending_sub)return 0;
-            if(status==1)jump=true;
+            if(status==1)return 1;
             break;
         }
         }
@@ -2012,13 +1942,15 @@ int32_t script_vm_run(EclThread* t,float delta) {
     }
     return t->sub_index<0?-1:0;
 }
-void script_tree_run(EclThread* t,float delta) {
-    if((t->flags1204&1)==0)script_vm_run(t,delta);
-    if(t->owner->pending_sub)return;
+bool script_tree_run(EclThread* t,float delta) {
+    if((t->flags1204&1)==0 && script_vm_run(t,delta)==1)return true;
+    if(t->owner->pending_sub)return false;
     for(size_t i=0;i<t->children.size();) {
-        EclThread* child=t->children[i];script_tree_run(child,delta);
+        EclThread* child=t->children[i];
+        if(script_tree_run(child,delta))return true;
         if(child->sub_index<0 && child->children.empty()) {delete child;t->children.erase(t->children.begin()+i);} else ++i;
     }
+    return false;
 }
 void script_tree_destroy(EclThread* t) {for(EclThread* child:t->children)script_tree_destroy(child);delete t;}
 

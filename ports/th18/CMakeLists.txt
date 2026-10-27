@@ -51,6 +51,7 @@ set(TH18_SOURCES
     src/presentation/trophy.cpp
     src/gameplay/shop.cpp
     src/gameplay/spell.cpp
+    src/gameplay/pickups.cpp
     src/player/player.cpp
     src/player/bomb.cpp
     src/stage/ecl_vm.cpp

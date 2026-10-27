@@ -23,6 +23,7 @@
 #include "stage/enemy.h"
 #include "stage/stage.h"
 #include "stage/session.h"
+#include "stage/hud.h"
 #include "projectiles/laser.h"
 #include "replay/replay.h"
 
@@ -271,27 +272,32 @@ void status_add_life(GameStatusBlock* s) {
         s->lives = s->lives_max;
         s->unk_070 = 0;
     }
-    s->unk_074 += 1;
+    if(stage::g_stage)stage::hud_refresh_lives();
     sound_play_se(0x11);
+    if(stage::g_stage)stage::hud_show_extend();
+    s->unk_074 += 1;
 }
 
 void status_add_life_fragment(GameStatusBlock* s) {
     if(s->lives>=s->lives_max){s->unk_070=0;return;}
-    constexpr int normal[]={3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,99999999};
+    constexpr int normal[]={3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,99999999};
     constexpr int extra[]={3,3,3,3,3,3,3,3,3,99999999};
     const int threshold=stage::g_difficulty==4?extra[s->unk_074]:normal[s->unk_074];
     ++s->unk_070;
     while(s->unk_070>=threshold){s->unk_070-=threshold;status_add_life(s);}
+    if(stage::g_stage)stage::hud_refresh_lives();
 }
 void status_add_bomb(GameStatusBlock* s) {
     ++s->unk_07c;
-    if(s->unk_07c<=s->unk_088)sound_play_se(46);
     if(s->unk_07c>=s->unk_088)s->unk_080=0;
     if(s->unk_07c>s->unk_088)s->unk_07c=s->unk_088;
+    else sound_play_se(46);
+    if(stage::g_stage)stage::hud_refresh_bombs();
 }
 void status_add_bomb_fragment(GameStatusBlock* s) {
     if(s->unk_07c>=s->unk_088){s->unk_080=0;return;}
     if(++s->unk_080>2){s->unk_080=0;status_add_bomb(s);}
+    if(stage::g_stage)stage::hud_refresh_bombs();
 }
 void player_reset(Player* p) {
     // FUN_0045a600：把 4+12 个子机对象的 +0xD4 置 1（下一帧贴到自机位置）。
@@ -1506,7 +1512,7 @@ void player_update(Player* p) {
             status_sub_power(&g_status,g_status.power_step);
             const float angle=std::atan2(-224.0f,-p->x);
             for (int i=0;i<7;++i)
-                stage::spawn_item(1,p->x,p->y,float(i)*kPiF/28.0f+angle-kPiF/8.0f,3.0f,0);
+                stage::spawn_item(1,&p->x,float(i)*kPiF/28.0f+angle-kPiF/8.0f,3.0f,0);
             g_status.money-=std::min(g_status.money/3,100);
             card_manager_after_death_penalty();
             player_refresh_power_options();

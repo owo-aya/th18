@@ -223,7 +223,7 @@ void card_passive_after_death_penalty(AbilityCard* card) {
         g_status.power = std::clamp(card->extra_54, g_status.power_step, g_status.power_max);
         break;
     case DeadSpell:
-        stage::spawn_item(7, g_player->x, g_player->y, -kPi * 0.5f, 3.2f, 3);
+        stage::spawn_item(7, &g_player->x, -kPi * 0.5f, 3.2f, 3);
         break;
     }
 }
@@ -424,8 +424,9 @@ void card_passive_on_drops(AbilityCard* card, const float* position, int* drop_c
         const float factor = 1.0f + rng_float01() * 0.5f;
         const float x = position[0] + std::cos(angle) * 32.0f * factor;
         const float y = position[1] + std::sin(angle) * 32.0f * factor;
-        stage::spawn_item(2, x, y, -kPi * 0.5f, 2.2f, 30);
-        angle += kPi * 0.25f + rng_float_pm1() * kPi * 0.25f;
+        const float drop_position[3]={x,y,position[2]};
+        stage::spawn_item(2, drop_position, -kPi * 0.5f, 2.2f, 30);
+        angle = angle + kPi * 0.5f + rng_float_pm1() * kPi * 0.25f;
         if (angle > kPi) angle -= kPi * 2.0f;
         if (angle < -kPi) angle += kPi * 2.0f;
     }

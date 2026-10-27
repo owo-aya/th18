@@ -25,7 +25,7 @@ struct AnmVm;
 namespace stage {
 bool shop_active();
 int32_t enemy_count();
-void spawn_item(int32_t kind,float x,float y,float angle,float speed,int32_t delay);
+void spawn_item(int32_t kind,const float* position,float angle,float speed,int32_t delay);
 int cancel_enemy_bullets_circle(float x,float y,float radius,int kind);
 // 429250: unlike 429370, this also cancels bullets with a nonzero delay.
 void cancel_delayed_enemy_bullets_circle(float x,float y,float radius,int kind);
