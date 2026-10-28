@@ -57,6 +57,7 @@ const char* const kPlayerShtNames[4] = {"pl00.sht", "pl01.sht", "pl02.sht", "pl0
 const char* const kPlayerAnmNames[4] = {"pl00.anm", "pl01.anm", "pl02.anm", "pl03.anm"};
 AnmVm* g_option_vm[4] = {};
 AnmVm* g_option_max_vm[4] = {};
+AnmVm* g_focus_vm;
 int g_option_power = -1;
 bool g_option_full = false;
 
@@ -188,15 +189,37 @@ void normal_move_velocity(Player* p, int32_t& dx, int32_t& dy) {
     }
     p->direction = dir;
 
-    // 原版聚焦还要求关卡对象 DAT_004cf2d0 及其 +0x198 非 0；关卡模块接入前
-    // 只用按键与 0x64C 冷却判定。
+    // 45b170 requires an enemy and four ticks since the movement reset.
     bool focus = false;
-    if (p->shoot_cooldown < 4) {
+    if (!stage::g_enemy_manager || stage::enemy_count()==0 || p->shoot_cooldown < 4) {
         p->follow_factor = 0x1e;
     } else {
         focus = (held & ACTION_SLOW) != 0;
     }
     p->focus_mode = focus ? 1 : 0;
+    if(!focus) {
+        if(g_focus_vm) {
+            anm_set_label(g_focus_vm,1);
+            anm_manage_vm(g_focus_vm,nullptr);
+            g_focus_vm=nullptr;
+        }
+        p->focus_handle=0;
+    } else {
+        if(p->focus_handle==0) {
+            AnmResource* resource=anm_get(8,"effect.anm");
+            g_focus_vm=anm_vm_alloc(resource);
+            anm_vm_bind_script(g_focus_vm,resource,26);
+            g_focus_vm->draw_layer=14;
+            g_focus_vm->flags3=(g_focus_vm->flags3&~0x200000u)|0x101000u;
+            anm_vm_update(g_focus_vm);p->focus_handle=anm_queue_add(g_focus_vm);
+            anm_manage_vm(g_focus_vm,&g_focus_vm);
+        }
+        if(g_focus_vm) {
+            const float scale=(p->flags_4779c&0x10)?(p->invuln_alpha-1.0f)*2.0f+1.0f:1.0f;
+            g_focus_vm->scale_extra_x=g_focus_vm->scale_extra_y=scale;
+            g_focus_vm->flags2|=8u;
+        } else p->focus_handle=0;
+    }
 
     const int32_t speed =
         focus ? (dir < 5 ? p->speed_focus : p->speed_diag_focus)
@@ -478,6 +501,7 @@ void player_destroy(Player* p) {
     }
     for(int i=0;i<4;++i){if(g_option_vm[i])anm_vm_free(g_option_vm[i]);if(g_option_max_vm[i])anm_vm_free(g_option_max_vm[i]);g_option_vm[i]=g_option_max_vm[i]=nullptr;}
     g_option_power=-1;
+    if(g_focus_vm)anm_vm_free(g_focus_vm);
     g_player = nullptr;
     // 攻击对象各自的子弹 ANM VM 由 anm_vm_alloc 分配，销毁前归还。
     AttackObject* pool = player_attack_pool(p);
@@ -562,6 +586,9 @@ void player_shot_update(Player* p) {
     }
     p->x = static_cast<float>(nx) * kSubPixel;
     p->y = static_cast<float>(ny) * kSubPixel;
+    if(g_focus_vm) {
+        g_focus_vm->extra_x=p->x;g_focus_vm->extra_y=p->y;g_focus_vm->extra_z=p->z;
+    } else p->focus_handle=0;
     if(reset_warp_follow)for(auto& point:p->trail){point[0]=p->x_sub;point[1]=p->y_sub;}
 
     // 位置历史：移动时整表后移一格，第 0 格写当前位置。
@@ -1708,7 +1735,8 @@ void player_stage_start() {
         put_i32(p,offset,frame-1);put_i32(p,offset+4,frame);put_f32(p,offset+8,float(frame));
     }
     p->flags_4779c&=~9u;
-    anm_queue_remove(p->focus_handle);p->focus_handle=0;
+    if(g_focus_vm)anm_vm_free(g_focus_vm);
+    p->focus_handle=0;
     anm_queue_remove(p->handle_476b4);p->handle_476b4=0;
     stage::hud_refresh_lives();stage::hud_refresh_bombs();
     // 416d50 schedules label 2 without advancing the option animations here.
