@@ -651,7 +651,8 @@ int32_t enemy_update_presentation(Enemy& e) {
         int damage=0;
         if(e.hurtbox[0]>0) {
             damage=player_bullet_hit_test(pos,(e.flag&0x1000)?e.hurtbox:nullptr,
-                (e.flag&0x1000)?0:e.hurtbox[0]*0.5f,&hit,hitpos,0,float(e.id),0);
+                (e.flag&0x1000)?0:e.hurtbox[0]*0.5f,&hit,hitpos,0,float(e.id),
+                (e.flag&0x1000)?e.collision_angle:0.0f);
             damage=int(float(damage) * *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(g_player)+0x47980));
         }
         if(g_player->state==0 || g_player->state==2)damage/=5;
@@ -690,7 +691,7 @@ int32_t enemy_update_presentation(Enemy& e) {
                 const float rotation=bullet_turn_angle(e.visual[0]->rot_z+1.57079637f);
                 x-=std::sin(rotation)*half;y=e.y+std::cos(rotation)*half;
             }
-            const float angle=*reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(&e)+0x134c);
+            const float angle=e.collision_angle;
             collision=player_collision_line(x,y,angle,e.hitbox[1],e.hitbox[0],false);
         }
         if((e.flag&0x200) && collision==2 && e.phase_time%6==0)player_graze(g_player->x,g_player->y);
@@ -717,8 +718,12 @@ int32_t enemy_update_presentation(Enemy& e) {
             if(parent>=0 && e.visual[parent]) {
                 vm->extra_x+=e.visual[parent]->pos_x;vm->extra_y+=e.visual[parent]->pos_y;vm->extra_z+=e.visual[parent]->pos_z;
             }
+            if(vm->flags3&0x200) {
+                auto* motion=reinterpret_cast<Motion*>(&e.x);
+                vm->flags2|=4;vm->rot_z=std::atan2(motion->vel_y,motion->vel_x);
+                e.collision_angle=vm->rot_z; // 43010f, feeds the next damage/contact query.
+            }
         }
-        if(vm->flags3&0x200){auto* motion=reinterpret_cast<Motion*>(&e.x);vm->flags2|=4;vm->rot_z=std::atan2(motion->vel_y,motion->vel_x);}
     }
     if(e.fade_time>0)e.fade_time-=g_speed_scale;
     if(e.state6320>0) {
@@ -1852,6 +1857,8 @@ static int32_t enemy_exec(void* host) {
         break;
     }
     case 568:e.flags6238=(e.flags6238&~1u)|(uint32_t(arg_int(e,0))&1u);break;
+    case 563:e.flag=(e.flag&~0x1000u)|((uint32_t(arg_int(e,0))&1u)<<12);break;
+    case 564:e.collision_angle=arg_float(e,0);break;
     case 570:
         if(e.field6828!=0 && e.field6824==g_status.unk_008) {
             *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x90)+=e.field6828;e.field6828=0;

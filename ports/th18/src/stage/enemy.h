@@ -92,7 +92,7 @@ struct Enemy {
     Motion relative_motion; // +0x12f8
     float hurtbox[2]; // +0x133c
     float hitbox[2]; // +0x1344
-    uint8_t pad134c[4];
+    float collision_angle; // +0x134c, ECL564 / velocity-facing animation.
     uint32_t effect[16];  // +0x1350 表现对象句柄，每槽 4 字节
     float animation_offset[16][3]; // +0x1390 ECL320
     int32_t animation_parent[16]; // +0x1450 ECL322，原版初值 -1
