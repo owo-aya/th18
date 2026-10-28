@@ -323,6 +323,7 @@ void update_sanae() {
 
 ThreadStatus update(void*) {
     if (!stage_session_started()) return THREAD_CONTINUE;
+    if (stage::shop_active()) return THREAD_CONTINUE; // 00420040
     if (g_active) {
         spell_on_sun_card();
         switch (g_player_id) {

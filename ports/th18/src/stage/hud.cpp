@@ -308,6 +308,7 @@ void hud_refresh_cards() {
         g_active_id = static_cast<CardId>(selected);
         g_active = create(cards, 0, false);
         assign_icon(g_active, 3, 4, card_info_by_id(selected)->text_desc);
+        anm_manage_vm(g_active,&g_active);
     }
     int category_count[3]{};
     for (int i = 0; i < card_manager_equipped_count(); ++i)
@@ -326,6 +327,7 @@ void hud_refresh_cards() {
                               category_index[category]++ * 80.0f;
         g_cards[i]->extra_y = static_cast<float>(category) * 130.0f;
         assign_icon(g_cards[i], 6, 7, info->text_desc);
+        anm_manage_vm(g_cards[i],&g_cards[i]);
     }
 }
 
@@ -346,12 +348,10 @@ void hud_update_cards() {
     // 408640 runs at A0x16 after card effects, before the ANM tick.
     if (g_active) {
         cooldown_visual(g_active, 2, 3, card_manager()->special, false);
-        anm_vm_update(g_active);
     }
     for (int i = 0; i < g_card_count; ++i) {
         if (g_card_objects[i]->flags_50&8)
             cooldown_visual(g_cards[i], 9, 7, g_card_objects[i], true);
-        anm_vm_update(g_cards[i]);
     }
 }
 

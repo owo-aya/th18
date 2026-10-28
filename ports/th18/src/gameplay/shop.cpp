@@ -14,6 +14,7 @@
 #include "presentation/anm.h"
 #include "presentation/sound.h"
 #include "presentation/text.h"
+#include "stage/session.h"
 
 const int32_t g_card_price[14] = {
     0, 50, 80, 100, 100, 140, 180, 200, 240, 280, 300, 350, 400, 450
@@ -139,6 +140,26 @@ void set_state(Shop* shop, int state)
     shop->timer = 0;
 }
 
+// 00458680 / 004132b0: discard the presentation, retaining goods and selection.
+void clear_visuals(Shop* shop)
+{
+    anm_vm_free(shop->heading);
+    shop->heading = nullptr;
+    for (int i = 0; i < shop->count; ++i) {
+        anm_vm_free(shop->preview[i]);
+        anm_vm_free(shop->new_mark[i]);
+        shop->preview[i] = shop->new_mark[i] = nullptr;
+    }
+    for (int i = 0; i < 7; ++i) {
+        anm_vm_free(shop->words[i]);
+        shop->words[i] = nullptr;
+        if (shop->word_texture[i]) shop->word_texture[i]->Release();
+        shop->word_texture[i] = nullptr;
+    }
+    anm_vm_free(shop->category);
+    shop->category = nullptr;
+}
+
 void show_words(Shop* shop, bool visible)
 {
     for (AnmVm* vm : shop->words) {
@@ -192,9 +213,12 @@ void show_goods(Shop* shop)
         if (g_status.money < card_price(info.tier))
             anm_interrupt(shop->preview[i], 3);
     }
-    if (shop->count > 1)
-        anm_set_label(shop->preview[1], 21);
-    anm_set_label(shop->preview[0], 20);
+    const int selected = shop->selected;
+    if (selected + 1 < shop->count)
+        anm_set_label(shop->preview[selected + 1], 21);
+    anm_set_label(shop->preview[selected], 20);
+    if (selected > 0)
+        anm_set_label(shop->preview[selected - 1], 19);
     if (!shop->blank)
         describe(shop);
 }
@@ -251,12 +275,14 @@ void draw_prices(Shop* shop)
     text_set_style(6);
     text_set_alignment(0, 1);
     text_set_color(0xffd0d0d0);
-    const TextPos money_pos{224.0f, 59.0f, 0.0f};
+    text_set_secondary_color(0xff000000);
+    // 00418990 -> 00419b90: native 640 positions in the port's 1280 canvas.
+    const TextPos money_pos{448.0f, 118.0f, 0.0f};
     text_draw_fmt(text_manager(), &money_pos, "Money %d  (+%d)", g_status.money, g_status.power - 100);
     const int tier = shop->goods[shop->selected]->tier;
     const int price = card_price(tier);
     text_set_color(g_status.money < price ? 0xff606060 : colors[tier]);
-    const TextPos price_pos{224.0f, 222.0f, 0.0f};
+    const TextPos price_pos{448.0f, 444.0f, 0.0f};
     text_draw_fmt(text_manager(), &price_pos, "Cost %d", price);
     text_set_color(0xffffffff);
     text_set_style(0);
@@ -307,6 +333,12 @@ Shop* shop_create(int stage)
     return shop;
 }
 
+void shop_set_paused(Shop* shop, bool paused)
+{
+    if (paused) clear_visuals(shop);
+    else set_state(shop, 0); // 00458e40: replay the entrance with the existing goods.
+}
+
 bool shop_update(Shop* shop)
 {
     // 00417cc0 bypasses the menu at timer 30; replay restores the saved purchase
@@ -314,6 +346,10 @@ bool shop_update(Shop* shop)
     if (shop->timer == 30 &&
         (session().mode == GameMode::Replay || session().mode == GameMode::Practice))
         return true;
+    // 00417cc0: a completed purchase exits immediately on pause; other states
+    // wait without advancing the timer, animation, prices or shopping input.
+    if ((stage_session_flags() & 0x10u) != 0)
+        return shop->state == 4 || shop->state == 5 || shop->state == 9;
     update_visuals(shop);
     const FrameInput input = input_frame();
     const uint32_t movement = input.pressed | input.repeat;
@@ -422,15 +458,6 @@ bool shop_update(Shop* shop)
 
 void shop_destroy(Shop* shop)
 {
-    anm_vm_free(shop->heading);
-    for (int i = 0; i < shop->count; ++i) {
-        anm_vm_free(shop->preview[i]);
-        anm_vm_free(shop->new_mark[i]);
-    }
-    for (int i = 0; i < 7; ++i) {
-        anm_vm_free(shop->words[i]);
-        if (shop->word_texture[i]) shop->word_texture[i]->Release();
-    }
-    anm_vm_free(shop->category);
+    clear_visuals(shop);
     delete shop;
 }

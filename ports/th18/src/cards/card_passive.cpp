@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <vector>
+#include <list>
 
 #include "cards/ability_card.h"
 #include "cards/card_manager.h"
@@ -24,9 +24,8 @@ namespace {
 struct PassiveVisual {
     AbilityCard* owner;
     AnmVm* vm;
-    uint32_t created_frame;
 };
-std::vector<PassiveVisual> g_visuals;
+std::list<PassiveVisual> g_visuals;
 int g_damage_events = 0;
 constexpr float kPi = 3.1415927410125732f;
 
@@ -46,30 +45,31 @@ AnmVm* create_visual(AbilityCard* owner, AnmResource* resource, int script, cons
     vm->extra_z = position[2];
     anm_vm_set_script(vm, resource, script);
     anm_queue_add(vm);
-    g_visuals.push_back({owner, vm, session().logic_frame});
+    g_visuals.push_back({owner, vm});
+    anm_manage_vm(vm, &g_visuals.back().vm);
     return vm;
 }
 
 void remove_visuals(AbilityCard* card) {
-    for (size_t i = 0; i < g_visuals.size();) {
-        if (g_visuals[i].owner == card) {
-            anm_vm_free(g_visuals[i].vm);
-            g_visuals.erase(g_visuals.begin() + i);
-        } else ++i;
+    for (auto it = g_visuals.begin(); it != g_visuals.end();) {
+        if (it->owner == card) {
+            anm_vm_free(it->vm);
+            it = g_visuals.erase(it);
+        } else ++it;
     }
 }
 
 AnmVm* find_visual(uint32_t handle) {
     for (PassiveVisual& visual : g_visuals)
-        if (visual.vm->handle == handle) return visual.vm;
+        if (visual.vm && visual.vm->handle == handle) return visual.vm;
     return nullptr;
 }
 
 void discard_visual(uint32_t handle) {
-    for (size_t i = 0; i < g_visuals.size(); ++i) {
-        if (g_visuals[i].vm->handle == handle) {
-            anm_vm_free(g_visuals[i].vm);
-            g_visuals.erase(g_visuals.begin() + i);
+    for (auto it = g_visuals.begin(); it != g_visuals.end(); ++it) {
+        if (it->vm && it->vm->handle == handle) {
+            anm_vm_free(it->vm);
+            g_visuals.erase(it);
             return;
         }
     }
@@ -407,14 +407,10 @@ int card_passive_shot_hit(AttackObject* shot) {
 }
 
 void card_passive_update(AbilityCard* card) {
-    for (size_t i = 0; i < g_visuals.size();) {
-        PassiveVisual& effect = g_visuals[i];
-        if (effect.owner != card) { ++i; continue; }
-        if (effect.created_frame != session().logic_frame) anm_vm_update(effect.vm);
-        if (effect.vm->script_cursor < 0 && (effect.vm->flags2 & 1u) == 0) {
-            anm_vm_free(effect.vm);
-            g_visuals.erase(g_visuals.begin() + i);
-        } else ++i;
+    // A22 advances and retires the VMs independently of 00408a90's shop gate.
+    for (auto it = g_visuals.begin(); it != g_visuals.end();) {
+        if (it->owner == card && it->vm == nullptr) it = g_visuals.erase(it);
+        else ++it;
     }
 }
 

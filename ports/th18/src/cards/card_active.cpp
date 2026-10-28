@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
-#include <vector>
+#include <list>
 
 #include "cards/card_manager.h"
 #include "core/input.h"
@@ -15,8 +15,8 @@
 #include "stage/stage.h"
 
 namespace {
-struct ActiveVisual { AbilityCard* card; AnmVm* vm; };
-std::vector<ActiveVisual> g_visuals;
+struct ActiveVisual { AbilityCard* card; AnmVm* vm; uint32_t handle; };
+std::list<ActiveVisual> g_visuals;
 
 float* effect_position(AbilityCard* card) {
     return reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(card) + 0x58);
@@ -38,23 +38,25 @@ AnmVm* create_visual(AbilityCard* card, int script, const float* position) {
     anm_vm_set_script(vm, ability, script);
     anm_queue_add(vm);
     card->unk_1c = static_cast<int32_t>(vm->handle);
-    g_visuals.push_back({card, vm});
+    g_visuals.push_back({card, vm, vm->handle});
+    // Original effects keep their ANM lifetime while the shop suspends card logic.
+    anm_manage_vm(vm, &g_visuals.back().vm);
     return vm;
 }
 
 void free_visuals(AbilityCard* card) {
-    for (size_t i = 0; i < g_visuals.size();) {
-        if (g_visuals[i].card == card) {
-            anm_vm_free(g_visuals[i].vm);
-            g_visuals.erase(g_visuals.begin() + i);
-        } else ++i;
+    for (auto it = g_visuals.begin(); it != g_visuals.end();) {
+        if (it->card == card) {
+            anm_vm_free(it->vm);
+            it = g_visuals.erase(it);
+        } else ++it;
     }
     card->unk_1c = 0;
 }
 
 AnmVm* visual_for(AbilityCard* card) {
     for (const ActiveVisual& visual : g_visuals)
-        if (visual.card == card) return visual.vm;
+        if (visual.card == card && visual.vm) return visual.vm;
     return nullptr;
 }
 
@@ -434,19 +436,19 @@ void card_active_update(AbilityCard* card) {
         break;
     default: break;
     }
-    for (size_t i = 0; i < g_visuals.size();) {
-        ActiveVisual& visual = g_visuals[i];
-        if (visual.card != card) { ++i; continue; }
+    for (auto it = g_visuals.begin(); it != g_visuals.end();) {
+        ActiveVisual& visual = *it;
+        if (visual.card != card) { ++it; continue; }
+        if (visual.vm == nullptr) {
+            if (static_cast<uint32_t>(card->unk_1c) == visual.handle) card->unk_1c = 0;
+            it = g_visuals.erase(it);
+            continue;
+        }
         if (card->id == Riceball) {
             move_visual(visual.vm, &g_player->x);
             stage::cancel_enemy_bullets_circle(g_player->x, g_player->y, 48, 0);
         }
-        anm_vm_update(visual.vm);
-        if (visual.vm->script_cursor < 0 && !(visual.vm->flags2 & 1)) {
-            if (static_cast<uint32_t>(card->unk_1c) == visual.vm->handle) card->unk_1c = 0;
-            anm_vm_free(visual.vm);
-            g_visuals.erase(g_visuals.begin() + i);
-        } else ++i;
+        ++it;
     }
 }
 

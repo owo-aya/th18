@@ -82,6 +82,7 @@ AbilityCard* install_instance(CardId id, uint32_t flags) {
 
 ThreadStatus update(void*) {
     if (!stage_session_started()) return THREAD_CONTINUE;
+    if (stage::shop_active()) return THREAD_CONTINUE; // 00408a90
     if (!g_player_attached) return THREAD_CONTINUE;
     for (int i = 0; i < g_instance_count; ++i) {
         card_options_update(g_instances[i]);

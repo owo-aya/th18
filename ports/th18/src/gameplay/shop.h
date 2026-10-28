@@ -6,6 +6,7 @@ struct Shop;
 // 004171b0 / 00417cc0。stage 是正在结算的关卡；商品使用独立 card_rng。
 // 调用者负责关卡暂停与离店后的关卡切换，商店推进自己的 ANM 和输入。
 Shop* shop_create(int stage);
+void shop_set_paused(Shop* shop, bool paused); // 00458680/00458e40: clear/reopen, retain goods.
 bool shop_update(Shop* shop); // true：购买后的离店延时或 BLANK 确认已经结束
 void shop_destroy(Shop* shop);
 

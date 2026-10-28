@@ -100,13 +100,29 @@ void player_options_rebuild(Player* p) {
     const int power = g_status.power / g_status.power_step;
     const bool full = g_status.power == g_status.power_max;
     const auto* sht = static_cast<const uint8_t*>(p->sht);
-    if (power != g_option_power || full != g_option_full) {
-        static constexpr int option_script[] = {15,17,12,10};
-        static constexpr int full_script[] = {16,18,13,12};
+    static constexpr int option_script[] = {15,17,12,10};
+    static constexpr int full_script[] = {16,18,13,12};
+    auto create=[&](int script) {
+        AnmVm* vm=anm_vm_alloc(player_anm(p));
+        anm_vm_bind_script(vm,player_anm(p),script);
+        vm->draw_layer=14;vm->flags3=(vm->flags3&~0x200000u)|0x101000u;
+        anm_vm_update(vm);vm->extra_x=0;vm->extra_y=-1000;
+        anm_queue_add(vm);return vm;
+    };
+    // 0045d5e0 refreshes full-power visuals on every explicit call.
+    for (int i=0;i<4;++i) {
+        if (g_option_max_vm[i]) anm_vm_free(g_option_max_vm[i]);
+        g_option_max_vm[i]=nullptr;
+        if(full && i<power) {
+            g_option_max_vm[i]=create(full_script[g_player_character]);
+            anm_manage_vm(g_option_max_vm[i],&g_option_max_vm[i]);
+        }
+    }
+    // Only the ordinary options depend on a change in the power tier.
+    if (power != g_option_power) {
         for (int i=0;i<4;++i) {
             if (g_option_vm[i]) anm_vm_free(g_option_vm[i]);
-            if (g_option_max_vm[i]) anm_vm_free(g_option_max_vm[i]);
-            g_option_vm[i]=g_option_max_vm[i]=nullptr;
+            g_option_vm[i]=nullptr;
             const int q=0x670+i*0xf0;
             put_i32(p,q,i<power?2:0);
             if(i>=power)continue;
@@ -120,26 +136,20 @@ void player_options_rebuild(Player* p) {
                 put_f32(p,q+0xac,*reinterpret_cast<const float*>(sht+0x44+slot*8));
             }
             put_i32(p,q+0xd4,1);
-            auto create=[&](int script) {
-                AnmVm* vm=anm_vm_alloc(player_anm(p));
-                anm_vm_bind_script(vm,player_anm(p),script);
-                vm->draw_layer=14;vm->flags3=(vm->flags3&~0x200000u)|0x101000u;
-                anm_vm_update(vm);vm->extra_x=0;vm->extra_y=-1000;
-                anm_queue_add(vm);return vm;
-            };
             g_option_vm[i]=create(option_script[g_player_character]);
             anm_manage_vm(g_option_vm[i],&g_option_vm[i]);
-            if(full) {
-                g_option_max_vm[i]=create(full_script[g_player_character]);
-                anm_manage_vm(g_option_max_vm[i],&g_option_max_vm[i]);
-            }
         }
-        g_option_power=power;g_option_full=full;
-        card_manager_options_reset();
+        g_option_power=power;
+        p->unk_476f8=power;
     }
+    g_option_full=full;
+    // Native +0x18 card callbacks run even when the main power tier is unchanged.
+    card_manager_options_reset();
 }
 void player_options_update(Player* p) {
-    player_options_rebuild(p);
+    if (g_status.power/g_status.power_step != g_option_power ||
+        (g_status.power == g_status.power_max) != g_option_full)
+        player_options_rebuild(p);
     const int power=g_status.power/g_status.power_step;
     p->unk_476f8=power;
     for(int i=0;i<power;++i) {
@@ -260,7 +270,6 @@ bool status_add_power(GameStatusBlock* s, int32_t value) {
 }
 
 void player_refresh_power_options() {
-    g_option_power=-1;
     player_options_rebuild(g_player);
 }
 void player_start_warp(int side) {

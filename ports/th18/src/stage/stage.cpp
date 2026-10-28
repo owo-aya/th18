@@ -485,6 +485,7 @@ bool stage_session_can_pause() {
 }
 void stage_session_set_paused(bool paused) {
     if(paused)g_stage_session->flags|=0x10;else g_stage_session->flags&=~0x10u;
+    if(stage::active_shop)shop_set_paused(stage::active_shop,paused);
 }
 
 void stage_session_set_wave(int wave) {
@@ -591,7 +592,11 @@ ThreadStatus session_update(void* ctx) {
     }
     if(stage::active_shop && shop_update(stage::active_shop)) {
         replay_shop_result();card_manager_shop_exit();player_set_shop_active(false);
-        shop_destroy(stage::active_shop);stage::active_shop=nullptr;msg_set_paused(false);
+        // 00417880 calls 0045d5e0 twice, including when power is unchanged.
+        player_refresh_power_options();player_refresh_power_options();
+        stage::hud_refresh_lives();stage::hud_refresh_bombs();
+        shop_destroy(stage::active_shop);stage::active_shop=nullptr;
+        msg_set_paused((s->flags&0x10u)!=0);
     }
 
     if ((s->flags & 0x4000) != 0) {
