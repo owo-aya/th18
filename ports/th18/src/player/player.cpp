@@ -144,9 +144,17 @@ void player_options_update(Player* p) {
     p->unk_476f8=power;
     for(int i=0;i<power;++i) {
         const int q=0x670+i*0xf0;
+        if(get_i32(p,q)==0)continue;
         int x=p->x_sub+get_i32(p,q+0x64+p->focus_mode*8);
         int y=p->y_sub+get_i32(p,q+0x68+p->focus_mode*8);
-        if(g_player_character==2) {
+        if(p->flags_4779c&2u) {
+            x=p->x_sub;y=p->y_sub;
+            if(p->follow_stun>29) {
+                put_i32(p,q,0);
+                for(AnmVm* vm:{g_option_vm[i],g_option_max_vm[i]})if(vm)anm_set_label(vm,1);
+                continue;
+            }
+        } else if(g_player_character==2) {
             const float angle=p->shot_angle+get_f32(p,q+0xa8),radius=get_f32(p,q+0xac);
             x=p->x_sub+int(std::cos(angle)*radius*128);y=p->y_sub+int(std::sin(angle)*radius*128);
         }
@@ -262,10 +270,10 @@ void player_start_warp(int side) {
 void player_set_shop_active(bool active) {
     if(active)g_player->flags_4779c|=2u;else g_player->flags_4779c&=~2u;
     const int label=active?3:2;
-    for(int i=0;i<4;++i)for(AnmVm* vm:{g_option_vm[i],g_option_max_vm[i]})if(vm)anm_interrupt(vm,label);
+    for(int i=0;i<4;++i)for(AnmVm* vm:{g_option_vm[i],g_option_max_vm[i]})if(vm)anm_set_label(vm,label);
     for(int i=0;i<12;++i) {
         auto* option=reinterpret_cast<uint8_t*>(g_player)+0xa30+i*0xf0;
-        for(int j=0;j<2;++j){AnmVm* vm=*reinterpret_cast<AnmVm**>(option+0xb0+j*4);if(vm)anm_interrupt(vm,label);}
+        for(int j=0;j<2;++j){AnmVm* vm=*reinterpret_cast<AnmVm**>(option+0xb0+j*4);if(vm)anm_set_label(vm,label);}
     }
     g_player->follow_stun=0;
 }
@@ -519,29 +527,34 @@ void player_shot_update(Player* p) {
     int32_t dx = 0;
     int32_t dy = 0;
     const int previous_dx=p->unk_47934;
-    bool reset_warp_follow=false;
 
     if ((p->flags_4779c & kFlagScriptX) == 0) {
         normal_move_velocity(p, dx, dy);
     } else {
-        // 脚本横移（死亡/被弹后原版强制左/右移，计时在 +0x477A4）。
+        // 45b170: border warp advances its timer before the 1/8/16 events.
         const bool left = (p->flags_4779c & kFlagScriptX) == 0x80;
         if(p->script_timer==0)player_set_shop_active(true);
+        put_i32(p,0x477ac,0);
+        p->script_offset=p->script_timer;
+        const float speed=stage::g_speed_scale;
+        const bool unit=speed>0.99f && speed<1.01f;
+        p->script_value+=unit?1.0f:speed;
+        p->script_timer=unit?p->script_timer+1:int32_t(p->script_value);
         if(p->script_timer==1)sound_play_se(left?81:80);
         int32_t vx = left ? -0x100 : 0x100;
         if (p->script_timer == 8) {
             vx = left ? 0xc000 : -0xc000;
             player_reset(p);
-            reset_warp_follow=true;
+            for(auto& point:p->trail){point[0]=p->x_sub;point[1]=p->y_sub;}
         }
         if (p->script_timer > 0xf) {
             player_set_shop_active(false);p->flags_4779c&=~0x180u;
+            p->script_offset=-1;p->script_timer=0;p->script_value=0;
             normal_move_velocity(p, dx, dy);
         } else {
             dx = vx;
             dy = 0;
         }
-        p->script_offset=p->script_timer;p->script_value+=stage::g_speed_scale;p->script_timer=int32_t(p->script_value);
     }
 
     int script=-1;
@@ -589,7 +602,6 @@ void player_shot_update(Player* p) {
     if(g_focus_vm) {
         g_focus_vm->extra_x=p->x;g_focus_vm->extra_y=p->y;g_focus_vm->extra_z=p->z;
     } else p->focus_handle=0;
-    if(reset_warp_follow)for(auto& point:p->trail){point[0]=p->x_sub;point[1]=p->y_sub;}
 
     // 位置历史：移动时整表后移一格，第 0 格写当前位置。
     if (dx != 0 || dy != 0) {
