@@ -10,6 +10,7 @@
 #include "stage/session.h"
 #include "core/thread.h"
 #include "player/player.h"
+#include "projectiles/laser.h"
 #include "presentation/anm.h"
 #include "presentation/sound.h"
 #include "stage/enemy.h"
@@ -132,8 +133,9 @@ void start_orb(int slot, int index, int damage, bool reverse) {
 
 void explode_orb(ReimuOrb& orb) {
     // 0x4212a0/0x422176：圆从64每帧扩8，11帧100伤害；旧追踪圈退出。
-    stage::cancel_enemy_bullets_circle(orb.pos[0], orb.pos[1], 128.0f, 0);
     sound_play_se_at(27, orb.pos[0]);
+    stage::cancel_ordinary_bullets_circle(orb.pos[0], orb.pos[1], 128.0f, 0);
+    laser::cancel_circle(orb.pos[0], orb.pos[1], 128.0f, 1, 1);
     PlayerBullet* hit = player_damage_circle(orb.pos, 64.0f, 8.0f, 11, 100);
     hit->flags |= 4;
     anm_set_label(orb.vm, 1);
@@ -221,8 +223,14 @@ void update_reimu() {
         orb.time += stage::g_speed_scale;
         orb.timer = static_cast<int>(orb.time);
         if (orb.hitbox->damage_accum >= 400) explode_orb(orb);
-        else if ((g_timer & 7) == (i & 7))
-            stage::cancel_enemy_bullets_circle(orb.pos[0], orb.pos[1], 64.0f, 0);
+    }
+    // 4223a0 runs after all orb movement and impact explosions.
+    for (int i=0;i<24;++i) {
+        ReimuOrb& orb=g_orbs[i];
+        if(orb.active && (g_timer&7)==(i&7)) {
+            stage::cancel_ordinary_bullets_circle(orb.pos[0],orb.pos[1],64.0f,0);
+            laser::cancel_circle(orb.pos[0],orb.pos[1],64.0f,0,1);
+        }
     }
     if (g_timer > 119 && !alive) {
         if (g_secondary) anm_set_label(g_secondary, 1);

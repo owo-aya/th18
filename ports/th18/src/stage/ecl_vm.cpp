@@ -860,12 +860,16 @@ void cancel_delayed_enemy_bullets_circle(float x,float y,float radius,int kind) 
         if(b.cancel_state==0 && dx*dx+dy*dy<=r*r)bullet_cancel(b,kind);
     }
 }
-int cancel_enemy_bullets_circle(float x,float y,float radius,int kind) {
+int cancel_ordinary_bullets_circle(float x,float y,float radius,int kind) {
     int count=0;
     for(auto& b:g_enemy_bullets) {
         const float dx=b.x-x,dy=b.y-y,r=radius+b.radius*0.5f;
         if(b.cancel_state==0 && b.delay==0 && dx*dx+dy*dy<=r*r){bullet_cancel(b,kind);++count;}
     }
+    return count;
+}
+int cancel_enemy_bullets_circle(float x,float y,float radius,int kind) {
+    const int count=cancel_ordinary_bullets_circle(x,y,radius,kind);
     return count+laser::cancel_circle(x,y,radius,kind);
 }
 bool cancel_one_enemy_bullet(float x,float y,float radius,int kind) {
