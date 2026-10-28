@@ -1359,6 +1359,7 @@ void player_attack_update(Player* p) {
 void player_shoot_update(Player* p) {
     // FUN_0045EA00：SHT 射击脚本驱动。
     uint32_t held = input_battle_state().held;
+    if(held&ACTION_SHOT)p->flags_4779c|=0x200u; // 45ea00: SpeedQueen reads this on its next update.
     if(msg_active())held&=~ACTION_SHOT;
     const PlayerSht* sht = static_cast<const PlayerSht*>(p->sht);
     if(p->focus_mode==0) {
