@@ -56,7 +56,7 @@ static EclThread* g_active_thread = nullptr;
 struct BulletExtra {float f[4];int32_t i[4];uint32_t type;int32_t async;uint32_t sub;};
 struct EnemyBullet {
     float x,y,speed,angle,radius;int type,color;AnmVm* vm;
-    BulletExtra extras[24],effects[32];float timers[32],accel[32][2];
+    BulletExtra extras[24],effects[32];float timers[32],accel[32][3];
     uint32_t effect_flags;int cursor,jump_count,age;bool appearing,removed;
     float vx,vy;
     int cancel_state;bool frozen,grazed;
@@ -70,6 +70,7 @@ struct EnemyBullet {
     float collision_time=0;
     alignas(4) uint8_t move_interp[0x58],size_interp[0x30];
     int render_bucket;
+    int outside_delay=5; // 424fe0 +670: five updates before screen culling.
 };
 static constexpr int bullet_render_buckets[]={5,5,5,5,3,3,3,3,4,4,4,3,4,4,4,4,3,3,1,1,2,2,2,1,1,2,2,2,2,1,1,3,0,2,5,4,4,3,2,3,3,3,3,2,1,1,0,0};
 static std::list<EnemyBullet> g_enemy_bullets;
@@ -150,6 +151,25 @@ static float bullet_turn_angle(float angle) {
     while(angle>3.14159265f){angle-=6.283185307f;if(counter++>0x20)break;}
     while(angle<-3.14159265f){angle+=6.283185307f;if(counter++>0x20)break;}
     return angle;
+}
+// 425b40 is shared by acceleration and stop/turn ET commands.
+static float bullet_resolve_angle(const EnemyBullet& b,float value,float spread) {
+    if(value<=-999990)return b.angle;
+    if(value>=2999990 && value<4999990) {
+        const float random=rng_float_pm1()*spread;
+        if(value>=3999990)return random+b.angle;
+        const float dx=g_player->x-b.x,dy=g_player->y-b.y;
+        return (dx==0 && dy==0?1.57079637f:std::atan2(dy,dx))+random;
+    }
+    if(value>=999990 && value<1999990) {
+        const float dx=g_player->x-b.x,dy=g_player->y-b.y;
+        return (dx==0 && dy==0?1.57079637f:std::atan2(dy,dx))+spread;
+    }
+    if(value>=4999990) {
+        auto* boss=find_enemy(g_enemy_manager->boss_id[0]);
+        return std::atan2(boss->y-b.y,boss->x-b.x);
+    }
+    return value;
 }
 
 static void motion_scalar(Enemy& e,int offset,float from,float to,int duration,int mode) {
@@ -605,6 +625,18 @@ int32_t enemy_update_presentation(Enemy& e) {
             anm_vm_update(vm);vm->node_flags=8;anm_queue_add(vm);e.visual[0]=vm;anm_manage_vm(vm,&e.visual[0]);e.primary_anim_state=direction;
         }
     }
+    // 42e5a0: cull only after the object has entered the playfield, using
+    // the previous animation state and independent horizontal/vertical retention.
+    if(auto* vm=e.visual[0]) {
+        e.subpixel_x=std::fabs(vm->sprite_h*vm->scale_y);
+        e.subpixel_y=std::fabs(vm->sprite_w*vm->scale_x);
+    }
+    const float half_x=e.subpixel_x*0.5f,half_y=e.subpixel_y*0.5f;
+    if(e.x+half_x<-192 || e.x-half_x>192) {
+        if((e.flag&0x10004u)==0x10000u)return 1;
+    } else if(e.y+half_y>=0 && e.y-half_y<=448) {
+        e.flag|=0x10000u;
+    } else if((e.flag&0x10000u) && !(e.flag&8u))return 1;
     if(script_tree_run(e.thread,g_speed_scale)){enemy_defeat(e);return 1;}
     while(e.pending_sub){const char* sub=e.pending_sub;e.pending_sub=nullptr;enemy_restart(e,sub);}
     if((e.thread->sub_index<0 && e.thread->children.empty()) || (e.flag&0x2000000))return 1;
@@ -696,7 +728,6 @@ int32_t enemy_update_presentation(Enemy& e) {
         }
         if((e.flag&0x200) && collision==2 && e.phase_time%6==0)player_graze(g_player->x,g_player->y);
     }
-    if(e.x < -320 || e.x>320 || e.y>560 || e.y < -160)return 1;
     if(e.visual[0]) {
         auto* vm=e.visual[0];
         if(e.damage_flash!=0){vm->flags2&=~0xe0000u;--e.damage_flash;}
@@ -755,19 +786,41 @@ static void bullet_fire(Enemy& e,int index) {
 void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin_y) {
     const auto* raw=reinterpret_cast<const uint8_t*>(&slot);
     int count=*reinterpret_cast<const int16_t*>(raw+0x46c),layers=*reinterpret_cast<const int16_t*>(raw+0x46e),mode=*reinterpret_cast<const int16_t*>(raw+0x470);
-    if(slot.const474&0x20)sound_play_se_at(int(slot.const478),origin_x);
-    const float aim=std::atan2(g_player->y-origin_y,g_player->x-origin_x);
+    const float dx=g_player->x-origin_x,dy=g_player->y-origin_y;
+    const float aim=dx==0 && dy==0?1.57079637f:std::atan2(dy,dx);
     const int type=int(slot.f000),color=int(slot.f004);const BulletType& def=kBulletTypes[type];
-    for(int layer=0;layer<layers;layer++)for(int n=0;n<count;n++) {
+    // 424fe0 consumes one of the 2000 native slots before evaluating any RNG.
+    for(int layer=0;layer<layers && g_enemy_bullets.size()<2000;layer++)for(int n=0;n<count && g_enemy_bullets.size()<2000;n++) {
         float speed=slot.f01c;
         if(layers>1)speed-=(speed-*reinterpret_cast<const float*>(&slot.i020))*float(layer)/float(layers-1);
         float angle=slot.f014;
         switch(mode) {
-        case 0:case 1:{float offset=count%2?float((n+1)/2)*slot.f018:(float(n/2)+0.5f)*slot.f018;if(n&1)offset=-offset;angle+=offset;if(mode==0)angle+=aim;break;}
-        case 2:case 3:case 4:case 5:angle+=float(n)*6.28318531f/float(count)+slot.f018*layer;if(mode==2||mode==4)angle+=aim;if(mode==4||mode==5)angle+=3.14159265f/float(count);break;
-        case 6:case 8:angle+=rng_float_pm1()*slot.f018;if(mode==8)speed=slot.f01c+rng_float01()*(*reinterpret_cast<const float*>(&slot.i020));break;
-        case 7:angle+=float(n)*6.28318531f/float(count)+slot.f018*layer;speed=slot.f01c+rng_float01()*(*reinterpret_cast<const float*>(&slot.i020));break;
+        case 0:case 1:{float offset=count%2?float((n+1)/2)*slot.f018:float(n/2)*slot.f018+slot.f018*0.5f;if(n&1)offset=-offset;if(mode==0)offset+=aim;angle+=offset;break;}
+        case 2:case 3:case 4:case 5: {
+            float ring=mode==2||mode==4?aim:0;
+            if(mode==4||mode==5)ring+=3.14159265f/float(count);
+            angle=(ring+float(n)*6.28318531f/float(count))+(slot.f018*layer+slot.f014);break;
         }
+        case 6:case 8:angle+=rng_float_pm1()*slot.f018;if(mode==8)speed=slot.f01c+rng_float01()*(*reinterpret_cast<const float*>(&slot.i020));break;
+        case 7:angle=float(n)*6.28318531f/float(count)+slot.f018*layer+slot.f014;speed=slot.f01c+rng_float01()*(*reinterpret_cast<const float*>(&slot.i020));break;
+        case 9:case 10: {
+            float ring=float(n)*6.28318531f/float(count);
+            const int pair=layers&1?layer+1:layer;
+            ring+=layers&1?float(pair/2)*slot.f018:float(layer/2)*slot.f018+slot.f018*0.5f;
+            if(layers>1)speed=((*reinterpret_cast<const float*>(&slot.i020)-slot.f01c)*float(pair&~1))/float(layers-1)+slot.f01c;
+            if(layer&1)ring=-ring;
+            if(mode==9)ring+=aim;
+            angle=slot.f014+ring;break;
+        }
+        case 11:case 12: {
+            const float ring=float(n)*6.28318531f/float(count)+(mode==12?3.14159265f/float(count):0);
+            angle=slot.f014+ring;
+            speed=(1.0f-std::fabs(std::sin(ring))*(*reinterpret_cast<const float*>(&slot.i020)))*speed;
+            break;
+        }
+        default:angle=0;break;
+        }
+        angle=bullet_turn_angle(bullet_turn_angle(angle));
         AnmVm* vm=anm_vm_alloc(g_bullet_anm);
         const float radius=*reinterpret_cast<const float*>(raw+0x24);
         g_enemy_bullets.push_front(EnemyBullet{origin_x+std::cos(angle)*radius,
@@ -789,6 +842,7 @@ void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin
         } else anm_set_label(vm,2);
         bullet_extra_start(b);vm->extra_x=b.x;vm->extra_y=b.y;anm_vm_update(vm);
     }
+    if(slot.const474&0x20)sound_play_se_at(int(slot.const478),origin_x);
 }
 int bullet_sprite_for_vm(const AnmVm* vm,int logical) {
     const auto* b=static_cast<const EnemyBullet*>(vm->callback_object);
@@ -1041,12 +1095,7 @@ static void bullet_extra_start(EnemyBullet& b) {
         switch(x.type) {
         case 0x10: {
             b.effect_flags|=0x10;b.turn_count=0;b.turn_speed=x.f[1]<=-999990?b.speed:x.f[1];
-            const float f=x.f[0];float resolved=f;
-            if(f<=-999990)resolved=b.angle;
-            else if(f>=999990 && f<1999990)resolved=std::atan2(g_player->y-b.y,g_player->x-b.x)+x.f[2];
-            else if(f>=2999990 && f<3999990)resolved=std::atan2(g_player->y-b.y,g_player->x-b.x)+rng_float_pm1()*x.f[2];
-            else if(f>=3999990 && f<4999990)resolved=b.angle+rng_float_pm1()*x.f[2];
-            else if(f>=4999990){auto* boss=find_enemy(g_enemy_manager->boss_id[0]);resolved=std::atan2(boss->y-b.y,boss->x-b.x);}
+            const float f=x.f[0],resolved=bullet_resolve_angle(b,f,x.f[2]);
             b.turn_angle=resolved;
             if(x.i[2]==2) {
                 const float dx=g_player->x-b.saved_x,dy=g_player->y-b.saved_y;
@@ -1129,7 +1178,7 @@ static void bullet_extra_start(EnemyBullet& b) {
         case 2:b.appearing=true;b.x-=b.vx*4;b.y-=b.vy*4;anm_interrupt(b.vm,7+x.i[0]);break;
         case 0x80:b.delay=x.i[0];break;
         case 0x8000:b.label=x.i[0];break;
-        case 0x100:b.effect_flags|=0x100;break;
+        case 0x100:b.effect_flags|=0x100;b.timers[bit]=float(x.i[0]);break;
         case 0x200: {
             b.type=x.i[0];b.color=x.i[1]&0x7fff;const auto& def=kBulletTypes[b.type];b.radius=def.radius;b.render_bucket=bullet_render_buckets[b.type];
             // 425c60 ET200 reloads the template and restores the same
@@ -1146,8 +1195,9 @@ static void bullet_extra_start(EnemyBullet& b) {
             // 425c60 consumes the following ET4000 as shot type/color data.
             const BulletExtra next=b.extras[b.cursor++];
             bullet::Slot slot{};slot.f000=next.i[0];slot.f004=next.i[1];slot.type=-1;
+            const float dx=g_player->x-b.x,dy=g_player->y-b.y;
             slot.f014=x.f[0]<=-999990?b.angle:
-                x.f[0]>=999990 && x.f[0]<1999990?std::atan2(g_player->y-b.y,g_player->x-b.x):bullet_turn_angle(x.f[0]);
+                x.f[0]>=999990 && x.f[0]<1999990?(dx==0 && dy==0?1.57079637f:std::atan2(dy,dx)):bullet_turn_angle(x.f[0]);
             slot.f018=x.f[1];slot.f01c=x.f[2]<=-999990?b.speed:x.f[2];
             std::memcpy(&slot.i020,&x.f[3],4);
             auto* raw=reinterpret_cast<uint8_t*>(&slot);std::memcpy(raw+0x28,b.extras,sizeof(b.extras));
@@ -1174,9 +1224,10 @@ static void bullet_extra_start(EnemyBullet& b) {
         default:
             b.effect_flags|=x.type;
             if(x.type==4 || x.type==0x200000) {
-                const float angle=x.f[1]<-999990?b.angle:x.f[1];
+                const float angle=bullet_resolve_angle(b,x.f[1],x.f[2]);
                 const float acceleration=x.type==4?x.f[0]:(x.f[0]-b.speed)/x.i[0];
                 b.accel[bit][0]=std::cos(angle)*acceleration;b.accel[bit][1]=std::sin(angle)*acceleration;
+                b.accel[bit][2]=acceleration;
             }
             break;
         }
@@ -1184,6 +1235,7 @@ static void bullet_extra_start(EnemyBullet& b) {
 }
 static void bullet_extra_update(EnemyBullet& b) {
     bool completed;
+    const float timer_step=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
     do {
         if(!(b.effect_flags&0x4000000u))bullet_extra_start(b);
         completed=false;
@@ -1216,11 +1268,19 @@ static void bullet_extra_update(EnemyBullet& b) {
                 break;
             case 4:case 0x200000:
                 if(time>=x.i[0])end=true;
-                else {b.vx+=b.accel[bit][0]*g_speed_scale;b.vy+=b.accel[bit][1]*g_speed_scale;b.speed=std::sqrt(b.vx*b.vx+b.vy*b.vy);b.angle=std::atan2(b.vy,b.vx);time+=g_speed_scale;}
+                else {
+                    b.speed+=b.accel[bit][2]*g_speed_scale;
+                    b.vx+=b.accel[bit][0]*g_speed_scale;b.vy+=b.accel[bit][1]*g_speed_scale;
+                    if(std::fabs(b.vx)>0.0001f || std::fabs(b.vy)>0.0001f) {
+                        b.angle=bullet_turn_angle(std::atan2(b.vy,b.vx));
+                        if(type==4)b.speed=std::sqrt(b.vx*b.vx+b.vy*b.vy);
+                    }
+                    time+=timer_step;
+                }
                 break;
             case 8:
                 if(time>=x.i[0])end=true;
-                else {b.speed+=x.f[0]*g_speed_scale;b.angle+=x.f[1]*g_speed_scale;b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;time+=g_speed_scale;}
+                else {b.speed+=x.f[0]*g_speed_scale;b.angle=bullet_turn_angle(bullet_turn_angle(b.angle+x.f[1]*g_speed_scale));b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;time+=timer_step;}
                 break;
             case 0x40000000: {
                 // 428460: ease velocity toward a player-relative direction, then derive polar motion.
@@ -1242,7 +1302,28 @@ static void bullet_extra_update(EnemyBullet& b) {
                 if(int32_t(time)<1)end=true;
                 else time-=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
                 break;
-            case 0x100:if(time>=x.i[0])end=true;else time+=g_speed_scale;break;
+            case 0x100: {
+                // 428970 expires after decrementing, and can release an
+                // offscreen bullet whose direction no longer enters the screen.
+                time-=timer_step;end=int(time)<=0;
+                const float half_w=b.vm->sprite_w*0.5f,half_h=b.vm->sprite_h*0.5f;
+                if(x.i[1]!=0 && !(b.x+half_w>-192 && b.x-half_w<192 && b.y+half_h>0 && b.y-half_h<448)) {
+                    const float corners[4][2]={{-192-half_w,-half_h},{192+half_w,-half_h},
+                                               {-192-half_w,448+half_h},{192+half_w,448+half_h}};
+                    const float vx=std::cos(b.angle),vy=std::sin(b.angle);
+                    float left=-999,right=-999;
+                    for(const auto& corner:corners) {
+                        float dx=corner[0]-b.x,dy=corner[1]-b.y;
+                        const float length=std::sqrt(dx*dx+dy*dy);
+                        if(length!=0){dx/=length;dy/=length;} // D3DXVec2Normalize keeps zero vectors zero.
+                        const float cross=vx*dy-vy*dx,dot=vy*dy+vx*dx;
+                        if(cross<=0 && dot>left && dot>=0)left=dot;
+                        if(cross>=0 && dot>right && dot>=0)right=dot;
+                    }
+                    if(left<-998 || right<-998)end=true;
+                }
+                break;
+            }
             case 0x20000: {
                 auto* q=reinterpret_cast<float*>(b.move_interp);
                 if(time>=x.i[0]){b.x=q[3];b.y=q[4];b.speed=b.move_speed;end=true;}
@@ -1285,7 +1366,7 @@ static void bullet_extra_update(EnemyBullet& b) {
             }
             if(end) {
                 b.effect_flags&=~type;completed=true;
-                if(type!=0x40000000u){b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;}
+                if(type==0x20000){b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;}
             }
         }
     } while(completed);
@@ -1335,14 +1416,18 @@ static void bullets_update() {
             if((b.effect_flags&0x4000000)==0) {b.x+=b.vx*g_speed_scale;b.y+=b.vy*g_speed_scale;}
             if(!b.removed)bullet_player_collision(b,false);
         }
+        const float half_width=b.vm->sprite_w*b.size_scale*0.5f,half_height=b.vm->sprite_h*b.size_scale*0.5f;
+        if(b.removed || (b.outside_delay<1 && !(b.effect_flags&0x100) &&
+           (b.x+half_width<=-192 || b.x-half_width>=192 || b.y+half_height<=-64 || b.y-half_height>=448))) {
+            anm_vm_free(b.vm);g_enemy_bullets.erase(current);continue;
+        }
         if(b.delay!=0)--b.delay;
+        if(b.outside_delay>0)--b.outside_delay;
         b.vm->extra_x=b.x;b.vm->extra_y=b.y;
         anm_vm_update(b.vm);
         const bool ended=b.vm->script_cursor<0 && (b.vm->flags2&1)==0;
         b.collision_time+=timer_step;b.age=int(b.collision_time);
-        if(b.cancel_state!=0 && ended)b.removed=true;
-        const float half_width=b.vm->sprite_w*b.size_scale*0.5f,half_height=b.vm->sprite_h*b.size_scale*0.5f;
-        if(b.removed || (!(b.effect_flags&0x100) && (b.x+half_width<=-192 || b.x-half_width>=192 || b.y+half_height<=-64 || b.y-half_height>=448))){anm_vm_free(b.vm);g_enemy_bullets.erase(current);}
+        if(ended){anm_vm_free(b.vm);g_enemy_bullets.erase(current);}
     }
 }
 
@@ -1763,8 +1848,12 @@ static int32_t enemy_exec(void* host) {
         break;
     }
     case 514: {
-        auto& event=e.interrupts[arg_int(e,0)];event.health=arg_int(e,1);event.time=arg_int(e,2);
-        event.health_sub=event.time_sub=reinterpret_cast<const char*>(ins)+32;break;
+        auto& event=e.interrupts[arg_int(e,0)];event.health=arg_int(e,1);
+        if(event.health>=0) {
+            event.time=arg_int(e,2);
+            event.health_sub=event.time_sub=reinterpret_cast<const char*>(ins)+32;
+        }
+        break;
     }
     case 515:
         e.state631c=-1;e.state6320=arg_int(e,0);
@@ -1774,7 +1863,7 @@ static int32_t enemy_exec(void* host) {
     case 517:stage_screen_shake(arg_int(e,0),arg_int(e,1),arg_int(e,2));break;
     case 518: {
         int entry=arg_int(e,0);
-        if(session().stage==6 && entry==0 && replay_mode()!=ReplayMode::Playback && card_manager_owned(Blank))entry=4;
+        if(session().stage==6 && entry==0 && card_manager_owned(Blank))entry=4;
         msg_start(entry);g_stage->dialog_active=msg_active();
         clear_all_enemy_bullets();laser::clear_lasers(0);
         [[fallthrough]]; // 430d40 also performs the 525 enemy cleanup.

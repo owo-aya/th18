@@ -45,8 +45,8 @@ float wrap(float a) {
     while(a<-pi){a+=2*pi;if(count++>32)break;}
     return a;
 }
-float aim(float x,float y){return std::atan2(g_player->y-y,g_player->x-x);}
-void position_vm(AnmVm* vm,float x,float y,float z=0){vm->extra_x=x;vm->extra_y=y;vm->extra_z=z;}
+float aim(float x,float y){const float dx=g_player->x-x,dy=g_player->y-y;return dx==0 && dy==0?pi*0.5f:std::atan2(dy,dx);}
+void position_vm(AnmVm* vm,float x,float y,float z=0){vm->pos_x=x;vm->pos_y=y;vm->pos_z=z;}
 AnmVm* new_vm(Laser* l,int script,int callback) {
     auto* vm=anm_vm_alloc(static_cast<AnmResource*>(manager->bullet_anm));
     anm_vm_bind_script(vm,static_cast<AnmResource*>(manager->bullet_anm),script);
@@ -156,32 +156,39 @@ int cancel_axis(Laser& l,float x,float y,float a,float b,float angle,int kind,bo
     if(line && first!=0) {
         if(first==hit.size()){l.flags=(l.flags&~4u)|2;return count;}
         l.x+=c*float(first*16);l.y+=s*float(first*16);l.length-=float(first*16);
-        l.line.max_length=l.length;l.traveled=float(first*16);if(l.length<=24)l.flags=(l.flags&~4u)|2;
+        if(l.length<=24){l.flags=(l.flags&~4u)|2;return count;}
+        l.line.max_length=l.length;l.traveled=float(first*16);
     }
     if(!line)first=0;
     size_t run=first;while(run<hit.size() && !hit[run])++run;
     if(!line || run<hit.size()) {
         const float old_x=l.x-c*float(first*16),old_y=l.y-s*float(first*16);
-        l.length=float((run-first)*16);
+        const float retained=float((run-first)*16);
+        if(line) {
+            l.line.max_length-=l.length-retained;
+            if(retained<24)l.flags=(l.flags&~4u)|2;
+        }
+        l.length=retained;
         for(size_t i=run;i<hit.size();) {
             while(i<hit.size() && hit[i])++i;const size_t begin=i;
             while(i<hit.size() && !hit[i])++i;
-            if((i-begin)*16<=24)continue;
+            if(line && (i-begin)*16<=24)continue;
             LineArgs part{};
             if(line)part=l.line;
             part.pos[0]=old_x+c*float(begin*16);part.pos[1]=old_y+s*float(begin*16);part.pos[2]=l.z;
-            part.angle=l.angle;part.max_length=part.start_length=float((i-begin)*16);
+            part.max_length=part.start_length=float((i-begin)*16);
             if(!line) {
-                part.end_travel=l.infinite.max_length-float(begin*16);part.width=l.width;part.speed=8;part.type=l.type;part.color=l.color;
+                part.angle=l.angle;part.end_travel=l.infinite.max_length-float(begin*16);part.width=l.width;part.speed=8;part.type=l.type;part.color=l.color;
                 if(rectangle){part.flags=(l.infinite.flags>>1)&1;part.se=part.transform_se=-1;}
             }
-            if(line || (part.pos[0]>-224 && part.pos[0]<224 && part.pos[1]>-32 && part.pos[1]<480))create_laser(0,&part);
+            if(line || rectangle || (part.pos[0]>-224 && part.pos[0]<224 && part.pos[1]>-32 && part.pos[1]<480))create_laser(0,&part);
         }
     }
     return count;
 }
 
 void axis_collision(Laser& l,bool query) {
+    if(l.kind==Type::Infinite && l.state!=4 && l.state!=2)return;
     if(l.length<=16 || (l.kind==Type::Line && l.width<=3))return;
     const float fraction=l.kind==Type::Infinite?0.9f:(l.line.flags&2)?1.0f:0.8f;
     const float start=l.kind==Type::Line && (l.line.flags&2)==0?l.length*0.1f:0;
@@ -189,12 +196,15 @@ void axis_collision(Laser& l,bool query) {
     const float dx=g_player->x-l.x-c*start,dy=g_player->y-l.y-s*start;
     const float along=c*dx+s*dy;
     const float width=l.width<32?l.width*0.5f:l.kind==Type::Line?(l.width-16)*0.5f:l.width-(l.width+16)/3;
-    const float px=l.x+c*(start+std::min(std::max(along,0.0f),l.length*fraction));
-    const float py=l.y+s*(start+std::min(std::max(along,0.0f),l.length*fraction));
+    // 403bc0 projects onto the infinite axis, including graze points beyond an end.
+    const float px=l.x+c*(start+along);
+    const float py=l.y+s*(start+along);
     const int collision=player_collision_line(l.x+c*start,l.y+s*start,l.angle,l.length*fraction,width,query);
     if(collision==1)cancel_axis(l,g_player->x,g_player->y,32,32,0,0,true,1);
-    else if(collision==2 && int(l.graze_time)%3==0)stage::player_graze(px,py);
-    l.graze_time+=stage::g_speed_scale;
+    else if(collision==2) {
+        if(int(l.graze_time)%3==0)stage::player_graze(px,py);
+        l.graze_time+=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
+    }
 }
 
 bool update_line(Laser& l) {
@@ -210,7 +220,8 @@ bool update_line(Laser& l) {
     const bool out0=l.x<=-192-l.width||l.x>=192+l.width||l.y<=-l.width||l.y>=448+l.width;
     const bool out1=tx<=-192-l.width||tx>=192+l.width||ty<=-l.width||ty>=448+l.width;
     if(int(l.outside)<1 && int(l.delay)<1 && out0 && out1)return true;
-    if(int(l.outside)>0)l.outside-=stage::g_speed_scale;if(int(l.delay)>0)l.delay-=stage::g_speed_scale;
+    const float timer_step=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
+    if(int(l.outside)>0)l.outside-=timer_step;if(int(l.delay)>0)l.delay-=timer_step;
     l.body->scale_x=l.width/l.body->sprite_h;l.body->scale_y=l.length/l.body->sprite_w;
     anm_vm_update(l.body);anm_vm_update(l.tip);if(l.traveled==0)anm_vm_update(l.start);
     axis_collision(l,false);return false;
@@ -245,7 +256,8 @@ bool update_infinite(Laser& l) {
     }
     if(l.state==4 || l.state==2)axis_collision(l,false);
     l.body->scale_x=l.width/l.body->sprite_h;l.body->scale_y=l.length/l.body->sprite_w;
-    anm_vm_update(l.body);anm_vm_update(l.start);l.state_time+=stage::g_speed_scale;
+    anm_vm_update(l.body);if(l.traveled==0)anm_vm_update(l.start);
+    l.state_time+=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
     return false;
 }
 
@@ -311,7 +323,7 @@ void fire_extra(Laser& l,const Extra& x,const Extra& next) {
     auto* raw=reinterpret_cast<uint8_t*>(&slot);*reinterpret_cast<int16_t*>(raw+0x46c)=int16_t(x.i[2]);*reinterpret_cast<int16_t*>(raw+0x46e)=int16_t(x.i[3]);
     *reinterpret_cast<int16_t*>(raw+0x470)=int16_t(x.i[0]);*reinterpret_cast<int32_t*>(raw+0x480)=x.i[1];slot.type=-1;
     stage::fire_enemy_bullet_slot(slot,l.x+std::cos(l.angle)*l.length,l.y+std::sin(l.angle)*l.length);
-    if(next.i[2]!=0)clear_one(l,1);
+    if(next.i[2]!=0)clear_one(l,0);
 }
 void curve_extras(Laser& l) {
     bool completed;
@@ -361,13 +373,15 @@ void init_curve(Laser& l) {
     l.angle=a.angle;l.width=a.width;l.speed=a.speed;l.x=a.pos[0]+std::cos(a.angle)*a.offset;l.y=a.pos[1]+std::sin(a.angle)*a.offset;l.z=a.pos[2];
     a.pos[0]=l.x;a.pos[1]=l.y;a.offset=0;l.vx=std::cos(l.angle)*l.speed;l.vy=std::sin(l.angle)*l.speed;
     l.body=new_vm(&l,a.style==1?322:142+a.style,a.style==1?0:3);anm_interrupt(l.body,2);
-    l.body->flags2=(l.body->flags2&~0x1e0u)|0x20;l.body->flags3=(l.body->flags3&~0x200000u)|0x100000;
-    l.tip=new_vm(&l,56+a.color,0);anm_interrupt(l.tip,2);l.tip->flags2=(l.tip->flags2&~0x1e0u)|0x20;l.tip->flags3|=0x100000;
+    l.body->flags2=(l.body->flags2&0x863ffe3fu)|0x6000020;l.body->flags3=(l.body->flags3&~0x200000u)|0x100000;
+    l.tip=new_vm(&l,56+a.color,0);anm_vm_update(l.tip);anm_interrupt(l.tip,2);
+    l.tip->flags2=(l.tip->flags2&0x87fffe3fu)|0x4000020;l.tip->flags3=(l.tip->flags3&~0x200000u)|0x100000;
     l.age=a.start_time;l.nodes.resize(a.node_count);
     for(auto& n:l.nodes){n.x=l.x;n.y=l.y;n.z=l.z;n.angle=l.angle;n.length=l.speed;}
     if(a.path_clone) {
         const auto* source=static_cast<const Path*>(a.path_clone);l.path=*source;Path* tail=&l.path;
-        for(source=source->next;source;source=source->next){tail->next=new Path(*source);tail=tail->next;}
+        for(source=source->next;source;source=source->next){tail->next=new Path(*source);tail->next->prev=tail;tail=tail->next;}
+        l.path.prev=nullptr;
         a.path_clone=nullptr;l.cursor=99;
     } else {
         l.path.start=0;l.path.end=999999;l.path.type=0;l.path.direction[0]=std::cos(l.angle);l.path.direction[1]=std::sin(l.angle);
@@ -406,22 +420,25 @@ int cancel_curve(Laser& l,float x,float y,float a,float b,float angle,int kind,b
     l.curve.node_count=int(l.nodes.size());return count;
 }
 void curve_collision(Laser& l,bool query) {
-    float distance=0;bool grazed=false;
+    float distance=0,graze_x=0,graze_y=0;bool grazed=false;
     for(size_t i=0;i+1<l.nodes.size();++i) {
-        const auto& n=l.nodes[i];distance+=n.length;if(distance<16)continue;
+        const auto n=l.nodes[i];distance+=n.length;if(distance<16)continue;
         const float c=std::cos(n.angle),s=std::sin(n.angle),px=n.x+c*n.length*0.5f,py=n.y+s*n.length*0.5f;
-        const int collision=player_collision_line(n.x,n.y,n.angle,n.length,l.width*0.5f,query);
-        if(collision==1){cancel_curve(l,g_player->x,g_player->y,32,32,0,0,true,1);break;}
-        if(collision==2 && !grazed && int(l.graze_time)%3==0){stage::player_graze(px,py);grazed=true;}
+        // 44f9e4 passes the half-segment offset point, not the stored path node.
+        const int collision=player_collision_line(px,py,n.angle,n.length,l.width*0.5f,query);
+        if(collision==1)cancel_curve(l,g_player->x,g_player->y,32,32,0,0,true,1);
+        else if(collision==2 && !grazed && int(l.graze_time)%3==0){graze_x=px;graze_y=py;grazed=true;}
     }
-    l.graze_time+=stage::g_speed_scale;
+    if(grazed)stage::player_graze(graze_x,graze_y);
+    l.graze_time+=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
 }
 bool update_curve(Laser& l) {
     curve_extras(l);if((l.flags&0x10)==0)curve_geometry(l);
-    bool outside=true;for(const auto& n:l.nodes)if(n.x>=-192-l.width && n.x<=192+l.width && n.y>=-l.width && n.y<=448+l.width){outside=false;break;}
-    if(int(l.outside)>0 || (l.effects&0x100))l.outside-=stage::g_speed_scale;
+    const float timer_step=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;
+    bool outside=true;for(const auto& n:l.nodes)if(n.x>-192-l.width && n.x<192+l.width && n.y>-l.width && n.y<448+l.width){outside=false;break;}
+    if(int(l.outside)>0 || (l.effects&0x100))l.outside-=timer_step;
     else if(outside)return true;
-    curve_collision(l,false);anm_vm_update(l.body);anm_vm_update(l.tip);l.age+=stage::g_speed_scale;return false;
+    curve_collision(l,false);anm_vm_update(l.body);anm_vm_update(l.tip);l.age+=timer_step;return false;
 }
 void draw_curve(Laser& l) {
     auto& vertices=l.vertices;vertices.resize(l.nodes.size()*2);
@@ -458,20 +475,22 @@ void draw_curve(Laser& l) {
     if(int(l.age)<=int(l.nodes.size())) {
         const auto& tail=l.nodes.back();position_vm(l.tip,tail.x,tail.y,tail.z);anm_draw_vm(l.tip);
     }
-    if(int(l.age)<=int(l.nodes.size())){const auto& n=l.nodes.back();position_vm(l.tip,n.x,n.y,n.z);anm_draw_vm(l.tip);}
 }
 
 void draw_axis(Laser& l) {
-    position_vm(l.body,l.x,l.y,l.z);l.body->rot_z=l.angle+pi*0.5f;anm_draw_vm(l.body);
+    position_vm(l.body,l.x,l.y,l.z);l.body->rot_z=wrap(l.angle+pi*0.5f);l.body->flags2|=4;anm_draw_vm(l.body);
     if(l.kind==Type::Line) {
         position_vm(l.tip,l.x+std::cos(l.angle)*l.length,l.y+std::sin(l.angle)*l.length,l.z);anm_draw_vm(l.tip);
         if(l.traveled==0){position_vm(l.start,l.x,l.y,l.z);anm_draw_vm(l.start);}
-    } else {position_vm(l.start,l.x,l.y,l.z);anm_draw_vm(l.start);}
+    } else if(l.traveled==0){position_vm(l.start,l.x,l.y,l.z);anm_draw_vm(l.start);}
 }
 void clear_one(Laser& l,int kind) {
     if(l.kind==Type::Beam){l.flags=(l.flags&~4u)|2;return;}
     if(l.kind==Type::Curve){for(size_t i=0;i<l.nodes.size();i+=3)stage::laser_cancel_effect(l.nodes[i].x,l.nodes[i].y,0,0,l.color,false);l.state=1;return;}
-    for(float step=8;step+8<l.length;step+=16)stage::laser_cancel_effect(l.x+std::cos(l.angle)*step,l.y+std::sin(l.angle)*step,kind,l.type,l.color,false);
+    for(float step=8;step+8<l.length;step+=16) {
+        const float x=l.x+std::cos(l.angle)*step,y=l.y+std::sin(l.angle)*step;
+        if(l.kind==Type::Line || (x>-208 && x<208 && y>-16 && y<464))stage::laser_cancel_effect(x,y,kind,l.type,l.color,false);
+    }
     l.state=1;
 }
 } // namespace
@@ -495,15 +514,26 @@ void create_laser(int32_t type,const void* args) {
         l->vx=std::cos(l->angle)*l->speed;l->vy=std::sin(l->angle)*l->speed;
         l->traveled=a.start_length>a.max_length?0.01f:0;l->state=2;
         l->body=new_vm(l,kBulletTypes[l->type].script,2);anm_interrupt(l->body,2);
-        l->start=new_vm(l,l->color+56,0);anm_interrupt(l->start,2);
-        l->tip=new_vm(l,l->color+((l->type<0x18||l->type==0x38)?0x5b:0x53),0);
+        l->body->flags2=(l->body->flags2&0x863ffe3fu)|0x6000020;
+        l->body->flags3=(l->body->flags3&~0x200000u)|0x100000;
+        l->start=new_vm(l,l->color+56,0);anm_vm_update(l->start);anm_interrupt(l->start,2);
+        l->start->flags2=(l->start->flags2&0x87fffe3fu)|0x4000020;
+        l->start->flags3=(l->start->flags3&~0x200000u)|0x100000;
+        l->tip=new_vm(l,l->color+((l->type<0x12||l->type==0x26)?0x5b:0x53),0);
         anm_vm_update(l->tip);
+        if(l->type<0x12||l->type==0x26)l->tip->flags2=(l->tip->flags2&0xfffffe3fu)|0x20;
+        l->tip->flags3=(l->tip->flags3&~0x200000u)|0x100000;
         if(a.se>=0)sound_play_se_at(a.se,l->x);
     } else if(l->kind==Type::Infinite) {
         l->infinite=*static_cast<const InfiniteArgs*>(args);auto& a=l->infinite;
         l->type=a.type;l->color=a.color;l->cursor=a.cursor;l->angle=a.angle;l->length=a.start_length;l->width=2;l->speed=a.growth;l->state=3;l->label=a.label;
-        l->body=new_vm(l,kBulletTypes[l->type].script,2);l->start=new_vm(l,l->color+56,0);
-        anm_vm_update(l->body);anm_vm_update(l->start);
+        l->x=a.origin[0]+std::cos(a.angle)*a.axis_offset;l->y=a.origin[1]+std::sin(a.angle)*a.axis_offset;l->z=a.origin[2];
+        l->body=new_vm(l,kBulletTypes[l->type].script,2);anm_interrupt(l->body,2);
+        l->body->flags2=(l->body->flags2&0x863ffe3fu)|0x6000020;
+        l->body->flags3=(l->body->flags3&~0x200000u)|0x100000;
+        l->start=new_vm(l,l->color+56,0);anm_vm_update(l->start);anm_interrupt(l->start,2);
+        l->start->flags2=(l->start->flags2&0x87fffe3fu)|0x4000020;
+        l->start->flags3=(l->start->flags3&~0x200000u)|0x100000;
         if(a.se>=0)sound_play_se_at(a.se,a.origin[0]);
     } else if(l->kind==Type::Curve) {
         l->curve=*static_cast<const CurveArgs*>(args);init_curve(*l);
@@ -617,10 +647,17 @@ int32_t update(Manager* m) {
             if(n->flags&8){if(l.kind==Type::Line || l.kind==Type::Infinite)axis_collision(l,true);else if(l.kind==Type::Curve)curve_collision(l,true);}
             else {
                 remove=l.kind==Type::Line?update_line(l):l.kind==Type::Infinite?update_infinite(l):l.kind==Type::Curve?update_curve(l):false;
-                if(!remove){n->field24=0;n->wave0=n->wave1;n->wave_frac+=stage::g_speed_scale;n->wave1=int(n->wave_frac);n->flags|=1;}
+                if(!remove){n->field24=0;n->wave0=n->wave1;n->wave_frac+=stage::g_speed_scale>0.99f && stage::g_speed_scale<1.01f?1.0f:stage::g_speed_scale;n->wave1=int(n->wave_frac);n->flags|=1;}
             }
         }
-        if(remove){--m->count;n->prev->next=next;if(next)next->prev=n->prev;if(m->tail==n)m->tail=n->prev;free_laser(&l);}n=next;
+        if(remove) {
+            // 448760 traverses the saved next, but unlinks through the live next:
+            // reflection/splitting may have appended a new tail during this update.
+            Object* linked_next=n->next;
+            --m->count;n->prev->next=linked_next;if(linked_next)linked_next->prev=n->prev;
+            if(m->tail==n)m->tail=n->prev;free_laser(&l);
+        }
+        n=next;
     }return 1;
 }
 ThreadStatus update_task(void* ctx) {
