@@ -905,6 +905,8 @@ int32_t player_bullet_hit_test(const float* pos, const float* size, float radius
                     }
                     b.flags&=~1u;a.bullet_index=0;
                 }
+            } else if (b.kind == 3) {
+                bomb_marisa_hit(pos); // Native returns -1: retain the hitbox's base damage.
             }
         }
         if(b.hit_type>=1 && b.hit_type<=4)grouped_damage[b.hit_type]=damage;

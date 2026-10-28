@@ -436,5 +436,13 @@ bool bomb_activate_from_card() {
 }
 
 bool bomb_active() { return g_active; }
+
+void bomb_marisa_hit(const float* pos) {
+    AnmVm* effect = create_vm(20, pos);
+    float* velocity = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(effect) + 0x4c4);
+    velocity[0] = std::cos(g_angle) * 6.5f;
+    velocity[1] = std::sin(g_angle) * 6.5f;
+    anm_manage_vm(effect, nullptr);
+}
 int bomb_elapsed_frames() { return g_timer; }
 void bomb_set_card_active(bool active) { g_card_active = active; }
