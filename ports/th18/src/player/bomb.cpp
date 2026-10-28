@@ -210,8 +210,8 @@ void update_reimu() {
             orb.pos[0] += std::cos(orb.angle) * orb.speed * stage::g_speed_scale;
             orb.pos[1] += std::sin(orb.angle) * orb.speed * stage::g_speed_scale;
         }
-        orb.pos[0] = std::nearbyint(orb.pos[0] * 100.0f) / 100.0f;
-        orb.pos[1] = std::nearbyint(orb.pos[1] * 100.0f) / 100.0f;
+        orb.pos[0] = std::floor(orb.pos[0] * 100.0f) / 100.0f;
+        orb.pos[1] = std::floor(orb.pos[1] * 100.0f) / 100.0f;
         orb.velocity[0] = orb.pos[0] - previous_x;
         orb.velocity[1] = orb.pos[1] - previous_y;
         position_vm(orb.vm, orb.pos);

@@ -1019,6 +1019,9 @@ void player_motion_step(Motion* m) {
     m->x += m->vel_x;
     m->y += m->vel_y;
     m->z += m->unk_03c;
+    // 402cc0 -> 404b40 -> floor: quantize after every motion step.
+    m->x=std::floor(m->x*100.0f)/100.0f;
+    m->y=std::floor(m->y*100.0f)/100.0f;
 }
 
 AttackObject* player_attack_pool(Player* p) {
