@@ -394,12 +394,15 @@ int card_passive_shot_hit(AttackObject* shot) {
     shot->bullet_index = 0;
     anm_vm_free(shot->anm_vm);
     AnmVm* visual = anm_vm_alloc(card_manager_ability());
-    anm_vm_set_script(visual, card_manager_ability(), 26);
+    // 40c4f0: template copy, initial tick, then ordinary A22 queue ownership.
+    anm_vm_bind_script(visual, card_manager_ability(), 26);
+    visual->flags3 |= 0x1000u;
+    anm_vm_update(visual);
     visual->extra_x = shot->motion.x;
     visual->extra_y = shot->motion.y;
     visual->extra_z = shot->motion.z;
     shot->anm_handle = anm_queue_add(visual);
-    shot->anm_vm = visual;
+    anm_manage_vm(visual, &shot->anm_vm);
     return shot->damage;
 }
 
