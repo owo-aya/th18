@@ -879,7 +879,7 @@ bool cancel_one_enemy_bullet(float x,float y,float radius,int kind) {
     }
     return false;
 }
-static void cancel_ordinary_rectangle(float x,float y,float width,float height,float angle,int kind) {
+void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind) {
     const float c=std::cos(angle),s=std::sin(angle);
     for(auto& b:g_enemy_bullets) {
         const float dx=b.x-x,dy=b.y-y;
@@ -889,7 +889,7 @@ static void cancel_ordinary_rectangle(float x,float y,float width,float height,f
     }
 }
 void cancel_enemy_bullets_rectangle(float x,float y,float width,float height,float angle,int kind) {
-    cancel_ordinary_rectangle(x,y,width,height,angle,kind);
+    cancel_ordinary_bullets_rectangle(x,y,width,height,angle,kind);
     laser::cancel_rectangle(x,y,width,height,angle);
 }
 void set_enemy_bullets_frozen(bool frozen) {
@@ -1920,7 +1920,7 @@ static int32_t enemy_exec(void* host) {
     case 708:if(auto* l=laser::find(arg_int(e,0)))l->angle=arg_float(e,1);break;
     case 709:laser::set_angle_step(arg_int(e,0),arg_float(e,1));break;
     case 710:laser::clear_tag(arg_int(e,0));break;
-    case 712:cancel_ordinary_rectangle(e.x,e.y,arg_float(e,0),arg_float(e,1),e.visual[0]->rot_z,1);break;
+    case 712:cancel_ordinary_bullets_rectangle(e.x,e.y,arg_float(e,0),arg_float(e,1),e.visual[0]->rot_z,1);break;
     case 714:laser::set_beam_flag(arg_int(e,0),arg_int(e,1));break;
     case 609:case 610:case 611:case 612: {
         const int slot=arg_int(e,0);int arg=1;

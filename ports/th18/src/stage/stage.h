@@ -33,6 +33,7 @@ int cancel_ordinary_bullets_circle(float x,float y,float radius,int kind);
 void cancel_delayed_enemy_bullets_circle(float x,float y,float radius,int kind);
 bool cancel_one_enemy_bullet(float x,float y,float radius,int kind);
 void cancel_enemy_bullets_rectangle(float x,float y,float width,float height,float angle,int kind);
+void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind);
 void set_enemy_bullets_frozen(bool frozen);
 void psyco_reflect_bullets(float x,float y,int timer);
 void miko_flash_cancel();

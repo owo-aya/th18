@@ -280,8 +280,9 @@ void update_marisa() {
     for (int i = 0; AnmVm* beam = anm_find_child(g_primary, g_enhanced ? 35 : 28, i); ++i) {
         float pos[3];
         vm_position(beam, pos);
-        stage::cancel_enemy_bullets_rectangle(pos[0], pos[1],
+        stage::cancel_ordinary_bullets_rectangle(pos[0], pos[1],
                                              beam->scale_x * 48, beam->scale_y * 160, g_angle, 0);
+        laser::cancel_rectangle(pos[0], pos[1], beam->scale_x * 48, beam->scale_y * 160, g_angle, 1);
     }
 }
 
