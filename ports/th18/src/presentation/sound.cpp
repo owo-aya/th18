@@ -451,6 +451,10 @@ void sound_play_se_at(int id, float x) {
     queue_se(id, static_cast<int>((x * 1000.0f) / 192.0f));
 }
 
+void sound_set_se_pan(int id, float x) {
+    g_se[id].buffer->SetPan(static_cast<int>((x * 1000.0f) / 192.0f));
+}
+
 void sound_stop_se(int id) {
     int index = 0;
     while (index < g_se_request_count && g_se_requests[index].id != id) ++index;

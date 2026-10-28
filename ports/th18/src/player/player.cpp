@@ -1276,6 +1276,7 @@ void player_attack_update(Player* p) {
             a->motion.angle=std::fabs(delta)>=0.001f?target:
                 std::remainder(a->motion.angle+delta*0.1f,kTwoPiF);
             if(a->active==1) {
+                sound_set_se_pan(20,p->x);
                 if(a->half_width<512.0f) {
                     a->half_width+=18.0f;
                     b->half_width=a->half_width;

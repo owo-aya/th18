@@ -34,6 +34,7 @@ void sound_shutdown();
 // sub_476be0 / sub_476c70：同一轮合并同编号请求；x 是游戏坐标，中心为 0。
 void sound_play_se(int id);
 void sound_play_se_at(int id, float x);
+void sound_set_se_pan(int id, float x); // SetPan without restarting a sustained sound.
 // 原版停止请求覆盖同轮同编号播放请求。
 void sound_stop_se(int id);
 // sub_476d20：在 app 主逻辑开头消费上一轮的请求。
