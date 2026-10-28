@@ -144,7 +144,8 @@ void explode_orb(ReimuOrb& orb) {
 
 stage::Enemy* nearest_enemy(float x, float y) {
     stage::Enemy* target = nullptr;
-    float distance = 999999999.0f;
+    // 421e10 passes a 512-pixel search radius to 438cb0.
+    float distance = 512.0f * 512.0f;
     for (auto* node = stage::g_enemy_manager->enemy_head; node; node = node->next) {
         stage::Enemy* enemy = node->self;
         if (enemy->flag & 0xc000021) continue;
