@@ -297,7 +297,11 @@ void card_passive_player_update(AbilityCard* card) {
         g_player->speed_normal = 1024;
         g_player->speed_diag = 724;
         if (card->extra_58 != g_player->direction && card->extra_58 == 0 && g_player->focus_mode == 0) {
-            g_player->invuln_value += 4.0f;
+            // 40ca74: advance this timer by four scaled ticks, preserving its previous value.
+            g_player->flags_47780 = 0;
+            g_player->anim_id = g_player->invuln;
+            const float speed = stage::g_speed_scale;
+            g_player->invuln_value += (speed > 0.99f && speed < 1.01f) ? 4.0f : speed * 4.0f;
             g_player->invuln = static_cast<int>(g_player->invuln_value);
         }
         card->extra_58 = g_player->direction;
