@@ -167,10 +167,11 @@ void update_reimu() {
         sound_play_se_at(44, g_player->x);
         for (int i = 0; i < 8; ++i) start_orb(8 + i, i, 7, true);
     }
-    if (g_timer != g_previous_timer && g_timer == (g_enhanced ? 320 : 200)) {
+    if (g_timer == (g_enhanced ? 320 : 200)) {
         for (ReimuOrb& orb : g_orbs)
             if (orb.active) explode_orb(orb);
         if (g_secondary) anm_set_label(g_secondary, 1);
+        stage_screen_shake(8,6,6);
         return;
     }
     bool alive = false;
@@ -222,7 +223,12 @@ void update_reimu() {
         orb.previous_timer = orb.timer;
         orb.time += stage::g_speed_scale;
         orb.timer = static_cast<int>(orb.time);
-        if (orb.hitbox->damage_accum >= 400) explode_orb(orb);
+        if (orb.hitbox->damage_accum >= 400) {
+            explode_orb(orb);
+            // 422255 issues a second explosion SE before its A14 shake task.
+            sound_play_se_at(27,orb.pos[0]);
+            stage_screen_shake(8,6,6);
+        }
     }
     // 4223a0 runs after all orb movement and impact explosions.
     for (int i=0;i<24;++i) {
