@@ -1833,7 +1833,7 @@ void anm_execute_script(AnmVm* vm)
         const uint8_t* payload = bytes + sizeof(AnmInstr);
         // AnmInstr = {u16 type; u16 length; i16 time; u16 param_mask}，参数从 +8 起；
         // 参数表达式由 param_mask（+6）决定。
-        const uint8_t mask = bytes[6];
+        const uint16_t mask = instr->param_mask;
 
         switch (instr->type)
         {
@@ -2224,11 +2224,13 @@ void anm_execute_script(AnmVm* vm)
                 reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm)+0x4e4):&vm->pos_x;
             std::memcpy(f,position,3*sizeof(float));
             if(instr->type==420) {
-                for(int axis=0;axis<3;++axis) {
-                    f[6+axis]=float_argument(vm,payload,mask,1+axis);
-                    f[3+axis]=float_argument(vm,payload,mask,4+axis);
-                    f[9+axis]=float_argument(vm,payload,mask,7+axis);
-                }
+                // 47a82e resolves start/end tangents, duration, then target Z/Y/X.
+                // Keep this order for random expressions; pl00 also needs bit 8.
+                for(int axis=0;axis<3;++axis)f[6+axis]=float_argument(vm,payload,mask,1+axis);
+                for(int axis=0;axis<3;++axis)f[9+axis]=float_argument(vm,payload,mask,7+axis);
+                i[20]=*reinterpret_cast<const int32_t*>(payload);
+                if(mask&1)i[20]=anm_vm_get_var(vm,i[20]);
+                for(int axis=2;axis>=0;--axis)f[3+axis]=float_argument(vm,payload,mask,4+axis);
             } else if (instr->type == 433) {
                 const float radius = float_argument(vm, payload, mask, 3);
                 const float angle = float_argument(vm, payload, mask, 2);
@@ -2242,8 +2244,10 @@ void anm_execute_script(AnmVm* vm)
             }
             i[15] = -1;
             i[19] = 1;
-            i[20] = *reinterpret_cast<const int32_t*>(payload);
-            if (mask & 1) i[20] = anm_vm_get_var(vm, i[20]);
+            if(instr->type!=420) {
+                i[20] = *reinterpret_cast<const int32_t*>(payload);
+                if (mask & 1) i[20] = anm_vm_get_var(vm, i[20]);
+            }
             i[21] = instr->type==420?8:*reinterpret_cast<const int32_t*>(payload+4);
             vm->script_cursor += length;
             break;
