@@ -1455,6 +1455,46 @@ void player_confirm_death(Player* p) {
 }
 }
 
+int player_collision_circle(float x, float y, float radius, bool query) {
+    Player* p=g_player;
+    const float dx=p->x-x,dy=p->y-y,distance=dx*dx+dy*dy;
+    float size=get_f32(p,p->focus_mode?0x479a0:0x4799c);
+    if(p->flags_4779c&0x10)size=size*p->invuln_alpha*3.6f;
+    if(distance<size*size+radius*radius) {
+        if(!msg_active()) {
+            if(query)return 2;
+            if(p->state!=2 && p->state!=3 && p->state!=4) {
+                if(p->invuln<1)player_hit();
+                return 1;
+            }
+        }
+    } else {
+        const float graze=std::max(40.0f,radius/2.5f)+size;
+        if(distance<graze*graze+radius*radius)return 2;
+    }
+    return 0;
+}
+
+int player_collision_line(float x, float y, float angle, float length, float width, bool query) {
+    Player* p=g_player;
+    const float c=std::cos(-angle),s=std::sin(-angle),dx=p->x-x,dy=p->y-y;
+    const float along=c*dx-s*dy,side=s*dx+c*dy;
+    const float hx=get_f32(p,p->focus_mode?0x479b0:0x479a4);
+    const float hy=get_f32(p,p->focus_mode?0x479b4:0x479a8);
+    const float half=width*0.5f;
+    if(along-hx*16<=length && side-hy*16<=half && along+hx*16>=0 && side+hy*16>=-half) {
+        if(length<along-hx || half<side-hy || along+hx<0 || side+hy<-half)return 2;
+        if(!msg_active()) {
+            if(query)return 2;
+            if(p->state!=2 && p->state!=3 && p->state!=4 && p->invuln<1) {
+                player_hit();
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 void player_hit() {
     Player* p=g_player;
     if (p->state==2 || p->state==3 || p->state==4 || p->invuln>0 || msg_active())

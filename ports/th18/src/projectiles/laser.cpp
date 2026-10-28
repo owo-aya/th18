@@ -174,19 +174,13 @@ void axis_collision(Laser& l,bool query) {
     const float start=l.kind==Type::Line && (l.line.flags&2)==0?l.length*0.1f:0;
     const float c=std::cos(l.angle),s=std::sin(l.angle);
     const float dx=g_player->x-l.x-c*start,dy=g_player->y-l.y-s*start;
-    const float along=c*dx+s*dy,side=c*dy-s*dx;
-    const auto* player=reinterpret_cast<const uint8_t*>(g_player);
-    const float hx=*reinterpret_cast<const float*>(player+(g_player->focus_mode?0x479b0:0x479a4));
-    const float hy=*reinterpret_cast<const float*>(player+(g_player->focus_mode?0x479b4:0x479a8));
+    const float along=c*dx+s*dy;
     const float width=l.width<32?l.width*0.5f:l.kind==Type::Line?(l.width-16)*0.5f:l.width-(l.width+16)/3;
-    const float half_width=width*0.5f;
     const float px=l.x+c*(start+std::min(std::max(along,0.0f),l.length*fraction));
     const float py=l.y+s*(start+std::min(std::max(along,0.0f),l.length*fraction));
-    if(along>=-hx && along<=l.length*fraction+hx && std::fabs(side)<=half_width+hy) {
-        if(!query && !msg_active() && g_player->state!=2 && g_player->state!=3 && g_player->state!=4 && g_player->invuln<1) {
-            player_hit();cancel_axis(l,g_player->x,g_player->y,32,32,0,0,true,1);
-        }
-    } else if(along>=-hx*16 && along<=l.length*fraction+hx*16 && std::fabs(side)<=half_width+hy*16 && int(l.graze_time)%3==0)stage::player_graze(px,py);
+    const int collision=player_collision_line(l.x+c*start,l.y+s*start,l.angle,l.length*fraction,width,query);
+    if(collision==1)cancel_axis(l,g_player->x,g_player->y,32,32,0,0,true,1);
+    else if(collision==2 && int(l.graze_time)%3==0)stage::player_graze(px,py);
     l.graze_time+=stage::g_speed_scale;
 }
 
@@ -393,17 +387,13 @@ int cancel_curve(Laser& l,float x,float y,float a,float b,float angle,int kind,b
     l.curve.node_count=int(l.nodes.size());return count;
 }
 void curve_collision(Laser& l,bool query) {
-    const auto* player=reinterpret_cast<const uint8_t*>(g_player);
-    const float hx=*reinterpret_cast<const float*>(player+(g_player->focus_mode?0x479b0:0x479a4));
-    const float hy=*reinterpret_cast<const float*>(player+(g_player->focus_mode?0x479b4:0x479a8));
     float distance=0;bool grazed=false;
     for(size_t i=0;i+1<l.nodes.size();++i) {
         const auto& n=l.nodes[i];distance+=n.length;if(distance<16)continue;
         const float c=std::cos(n.angle),s=std::sin(n.angle),px=n.x+c*n.length*0.5f,py=n.y+s*n.length*0.5f;
-        const float dx=g_player->x-px,dy=g_player->y-py,along=std::fabs(c*dx+s*dy),side=std::fabs(c*dy-s*dx);
-        if(along<=n.length*0.5f+hx && side<=l.width*0.25f+hy) {
-            if(!query && !msg_active() && g_player->state!=2 && g_player->state!=3 && g_player->state!=4 && g_player->invuln<1){player_hit();cancel_curve(l,g_player->x,g_player->y,32,32,0,0,true,1);break;}
-        } else if(!grazed && along<=n.length*0.5f+hx*16 && side<=l.width*0.25f+hy*16 && int(l.graze_time)%3==0){stage::player_graze(px,py);grazed=true;}
+        const int collision=player_collision_line(n.x,n.y,n.angle,n.length,l.width*0.5f,query);
+        if(collision==1){cancel_curve(l,g_player->x,g_player->y,32,32,0,0,true,1);break;}
+        if(collision==2 && !grazed && int(l.graze_time)%3==0){stage::player_graze(px,py);grazed=true;}
     }
     l.graze_time+=stage::g_speed_scale;
 }

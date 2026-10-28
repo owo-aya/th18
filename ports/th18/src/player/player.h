@@ -253,6 +253,9 @@ int32_t player_attack_spawn(Player* p, const ShtInstruction* instr, int32_t comm
                             float timer_a, const float* base_pos, void* option,
                             AnmResource* resource = nullptr);
 void player_hit();
+// 45cd90 / 45cea0: 0 = outside, 1 = hit, 2 = graze (query never hits).
+int player_collision_circle(float x, float y, float radius, bool query);
+int player_collision_line(float x, float y, float angle, float length, float width, bool query);
 void player_motion_init(Motion* m); // FUN_00402BF0
 void player_motion_step(Motion* m); // FUN_00402CC0
 

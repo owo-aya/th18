@@ -67,6 +67,7 @@ struct EnemyBullet {
     int label;
     bool triggered;
     float size_scale=1.0f,move_speed;
+    float collision_time=0;
     alignas(4) uint8_t move_interp[0x58],size_interp[0x30];
     int render_bucket;
 };
@@ -678,10 +679,21 @@ int32_t enemy_update_presentation(Enemy& e) {
     if(e.flags6238&2){enemy_defeat(e);return 1;}
     extra_aura_update(e);
     if(e.flag&0x2000000)return 1;
-    if((e.flag&0x4000022u)==0 && (!card_manager_owned(Koishi) || (e.flag&0x800000)!=0)) {
-        const float dx=g_player->x-e.x,dy=g_player->y-e.y;
-        const float player_radius=*reinterpret_cast<const float*>(static_cast<const uint8_t*>(g_player->sht)+4);
-        if(std::fabs(dx)<e.hitbox[0]*0.5f+player_radius && std::fabs(dy)<e.hitbox[1]*0.5f+player_radius)player_hit();
+    if((e.flag&0x4000022u)==0 && *reinterpret_cast<const int32_t*>(reinterpret_cast<const uint8_t*>(&e)+0x6334)<1 &&
+       (!card_manager_owned(Koishi) || (e.flag&0x800000)!=0)) {
+        int collision;
+        if((e.flag&0x1000)==0)collision=player_collision_circle(e.x,e.y,e.hitbox[0]*0.5f,false);
+        else {
+            const float half=e.hitbox[1]*0.5f;
+            float x=e.x,y=e.y+half;
+            if(e.visual[0]) {
+                const float rotation=bullet_turn_angle(e.visual[0]->rot_z+1.57079637f);
+                x-=std::sin(rotation)*half;y=e.y+std::cos(rotation)*half;
+            }
+            const float angle=*reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(&e)+0x134c);
+            collision=player_collision_line(x,y,angle,e.hitbox[1],e.hitbox[0],false);
+        }
+        if((e.flag&0x200) && collision==2 && e.phase_time%6==0)player_graze(g_player->x,g_player->y);
     }
     if(e.x < -320 || e.x>320 || e.y>560 || e.y < -160)return 1;
     if(e.visual[0]) {
@@ -1255,10 +1267,31 @@ static void bullet_extra_update(EnemyBullet& b) {
         }
     } while(completed);
 }
+static int bullet_player_collision(EnemyBullet& b,bool query) {
+    if(b.radius<=0)return 0;
+    // 424fe0 sets bit 0x10 on ordinary bullets; ET20000000 changes this radius.
+    const int collision=player_collision_circle(b.x,b.y,b.radius*b.size_scale,query);
+    if(collision==1) {
+        if(b.delay!=0)return collision;
+    } else {
+        if(collision!=2 || b.grazed)return collision;
+        b.grazed=true;
+        player_graze(b.x,b.y);
+        if(!card_manager_owned(Yuyuko) || ++g_graze_cancel_count%6!=0)return collision;
+    }
+    b.cancel_state=3;anm_interrupt(b.vm,1);
+    return collision;
+}
+
 static void bullets_update() {
-    const float player_radius=*reinterpret_cast<const float*>(static_cast<const uint8_t*>(g_player->sht)+4);
     for(auto it=g_enemy_bullets.begin();it!=g_enemy_bullets.end();) {
-        auto current=it++;auto& b=*current;if(b.frozen)continue;++b.age;
+        auto current=it++;auto& b=*current;
+        const float timer_step=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
+        if(b.frozen && b.cancel_state==0 && (!b.appearing || b.age>=8)) {
+            bullet_player_collision(b,true);
+            b.collision_time+=timer_step;b.age=int(b.collision_time);
+            continue;
+        }
         // 423e10 advances scaling once per frame, before the ET execution loop.
         if(b.effect_flags&0x400000) {
             b.size_scale=interp_eval1(b.size_interp);
@@ -1270,23 +1303,20 @@ static void bullets_update() {
         else if(b.cancel_state==0 && (b.effect_flags&0x4000000)==0) {
             b.x+=b.vx*g_speed_scale*(b.appearing?0.5f:1.0f);b.y+=b.vy*g_speed_scale*(b.appearing?0.5f:1.0f);
         }
+        int collision=0;
+        if(b.cancel_state==0 && (!b.appearing || b.age>=8))collision=bullet_player_collision(b,false);
+        // 423e10 state 2 enters state 1 in this tick after its appearance VM
+        // has made var0 nonzero, unless this tick returned a collision hit.
+        if(b.appearing && collision!=1 && anm_vm_get_var(b.vm,10000)!=0 && b.cancel_state==0) {
+            b.appearing=false;bullet_extra_update(b);
+            if((b.effect_flags&0x4000000)==0) {b.x+=b.vx*g_speed_scale;b.y+=b.vy*g_speed_scale;}
+            if(!b.removed)bullet_player_collision(b,false);
+        }
+        if(b.delay!=0)--b.delay;
         b.vm->extra_x=b.x;b.vm->extra_y=b.y;
         anm_vm_update(b.vm);
         const bool ended=b.vm->script_cursor<0 && (b.vm->flags2&1)==0;
-        const bool visible=anm_vm_get_var(b.vm,10000)!=0;
-        if(b.appearing && visible)b.appearing=false;
-        if(b.delay!=0)--b.delay;
-        float dx=b.x-g_player->x,dy=b.y-g_player->y,r=b.radius*b.size_scale+player_radius;
-        if(b.cancel_state==0 && !b.appearing) {
-            const float distance=dx*dx+dy*dy;
-            if(distance<=r*r && g_player->state!=2 && g_player->state!=3 && g_player->state!=4) {
-                player_hit();if(b.delay==0){b.cancel_state=3;anm_interrupt(b.vm,1);}
-            } else if(!b.grazed && distance<=(b.radius*b.size_scale+24)*(b.radius*b.size_scale+24)) {
-                b.grazed=true;
-                player_graze(b.x,b.y);
-                if(card_manager_owned(Yuyuko) && ++g_graze_cancel_count%6==0){b.cancel_state=3;anm_interrupt(b.vm,1);}
-            }
-        }
+        b.collision_time+=timer_step;b.age=int(b.collision_time);
         if(b.cancel_state!=0 && ended)b.removed=true;
         const float half_width=b.vm->sprite_w*b.size_scale*0.5f,half_height=b.vm->sprite_h*b.size_scale*0.5f;
         if(b.removed || (!(b.effect_flags&0x100) && (b.x+half_width<=-192 || b.x-half_width>=192 || b.y+half_height<=-64 || b.y-half_height>=448))){anm_vm_free(b.vm);g_enemy_bullets.erase(current);}
