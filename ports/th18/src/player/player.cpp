@@ -48,9 +48,6 @@ int32_t g_player_character = 0;       // DAT_004cccf4  pl00..pl03
 int32_t g_player_shot_type = 0;       // DAT_004cccf8  与角色相加选 SHT 条目
 GameStatusBlock g_status = {};        // 0x4cccdc
 
-// 原版 DAT_004ccbf0：慢动作系数，时停/死亡演出会改写；接入那些系统前恒为 1.0。
-float g_time_scale = 1.0f;
-
 namespace {
 int32_t player_bullet_alloc(const float* pos,float angle,int32_t life,int32_t damage);
 
@@ -520,7 +517,7 @@ void player_shot_update(Player* p) {
             dx = vx;
             dy = 0;
         }
-        p->script_offset=p->script_timer;p->script_value+=g_time_scale;p->script_timer=int32_t(p->script_value);
+        p->script_offset=p->script_timer;p->script_value+=stage::g_speed_scale;p->script_timer=int32_t(p->script_value);
     }
 
     int script=-1;
@@ -532,8 +529,8 @@ void player_shot_update(Player* p) {
     // 保存方向/速度，按慢动作系数换成浮点速度；方向非 0 时把当前速度存成上一帧。
     p->unk_47934 = dx;
     p->unk_47938 = dy;
-    p->vel_x = static_cast<float>(dx) * g_time_scale;
-    p->vel_y = static_cast<float>(dy) * g_time_scale;
+    p->vel_x = static_cast<float>(dx) * stage::g_speed_scale;
+    p->vel_y = static_cast<float>(dy) * stage::g_speed_scale;
     if (p->direction != 0) {
         p->vel_x_prev = p->vel_x;
         p->vel_y_prev = p->vel_y;
@@ -901,8 +898,6 @@ int32_t player_bullet_hit_test(const float* pos, const float* size, float radius
 
 namespace {
 
-// 原版共享的慢动作倍率（PTR_DAT_004b35c0 → DAT_004ccbf0，通常 1.0）。全局系统接入后替换。
-constexpr float kSlowmoScale = 1.0f;
 constexpr float kTwoPiF = 6.28318548f;
 constexpr float kPiF = 3.14159265f;
 
@@ -1014,7 +1009,7 @@ PlayerBullet* player_damage_rectangle(const float*pos,float angle,float width,fl
 
 void player_motion_init(Motion* m) {
     // FUN_00402BF0 case 0（玩家子弹/攻击对象默认类型）：速度向量 = 角度方向 × 速度 × 慢动作。
-    const float v = m->speed * kSlowmoScale;
+    const float v = m->speed * stage::g_speed_scale;
     m->vel_x = std::cos(m->angle) * v;
     m->vel_y = std::sin(m->angle) * v;
 }
