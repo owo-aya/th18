@@ -63,7 +63,7 @@ void position_vm(AnmVm* vm, const float* pos) {
     vm->extra_z = pos[2];
 }
 
-AnmVm* create_vm(int script, const float* pos) {
+AnmVm* create_vm(int script, const float* pos, AnmVm** owner) {
     auto* resource = reinterpret_cast<AnmResource*>(g_player->anm_player);
     AnmVm* vm = anm_vm_alloc(resource);
     anm_vm_bind_script(vm, resource, script);
@@ -71,17 +71,11 @@ AnmVm* create_vm(int script, const float* pos) {
     position_vm(vm, pos);
     anm_vm_update(vm);
     anm_queue_add(vm);
+    // 488350 -> A22. An earlier Bomb's fading VM keeps its own lifetime when
+    // its handle slot is reused; deleting it must not clear the replacement.
+    if (owner && *owner) anm_manage_vm(*owner, nullptr);
+    anm_manage_vm(vm, owner);
     return vm;
-}
-
-void update_vm(AnmVm*& vm) {
-    if (vm) {
-        anm_vm_update(vm);
-        if (vm->script_cursor < 0 && !(vm->flags2 & 1)) {
-            anm_vm_free(vm);
-            vm = nullptr;
-        }
-    }
 }
 
 void invulnerable(int frames) {
@@ -121,7 +115,7 @@ void start_orb(int slot, int index, int damage, bool reverse) {
     orb.angle = wrap_angle(index * (kPi / 4.0f));
     orb.radial_speed = reverse ? -0.049087386f : 0.049087386f;
     orb.angular_speed = reverse ? -0.104719758f : 0.104719758f;
-    orb.vm = create_vm(g_enhanced ? 23 : 22, orb.pos);
+    create_vm(g_enhanced ? 23 : 22, orb.pos, &orb.vm);
     orb.hitbox = player_damage_circle(orb.pos, 56.0f, 0.0f, 9999, damage);
     orb.hitbox->flags |= 4;
     orb.hitbox->hit_interval = 3;
@@ -291,7 +285,7 @@ void update_sakuya() {
     if (g_enhanced && (g_timer == 50 || g_timer == 100 || g_timer == 150)) {
         sound_play_se(51);
         if (g_secondary) anm_vm_free(g_secondary);
-        g_secondary = create_vm(24, &g_player->x);
+        create_vm(24, &g_player->x, &g_secondary);
         player_damage_circle(&g_player->x, 8, 10, 40, 7);
         player_damage_circle(g_pos, 640, 0, 20, 50);
     }
@@ -341,9 +335,6 @@ ThreadStatus update(void*) {
         g_time += stage::g_speed_scale;
         g_timer = static_cast<int>(g_time);
     }
-    update_vm(g_primary);
-    update_vm(g_secondary);
-    for (ReimuOrb& orb : g_orbs) update_vm(orb.vm);
     return THREAD_CONTINUE;
 }
 } // namespace
@@ -396,28 +387,28 @@ static void start_bomb() {
     switch (g_player_id) {
     case 0:
         sound_play_se(49);
-        g_secondary = create_vm(37, g_pos);
+        create_vm(37, g_pos, &g_secondary);
         break;
     case 1:
         sound_play_se(49);
-        g_primary = create_vm(g_enhanced ? 29 : 22, g_pos);
+        create_vm(g_enhanced ? 29 : 22, g_pos, &g_primary);
         stage_master_spark_shake(g_enhanced);
-        g_secondary = create_vm(36, g_pos);
+        create_vm(36, g_pos, &g_secondary);
         g_player->flags_4779c |= 4;
         invulnerable(120);
         break;
     case 2: {
         sound_play_se(51);
         const float pos[] = {0, 0, 0};
-        g_primary = create_vm(g_enhanced ? 25 : 22, pos);
-        g_secondary = create_vm(g_enhanced ? 24 : 21, g_pos);
+        create_vm(g_enhanced ? 25 : 22, pos, &g_primary);
+        create_vm(g_enhanced ? 24 : 21, g_pos, &g_secondary);
         invulnerable(g_enhanced ? 300 : 180);
         break;
     }
     case 3:
         sound_play_se(30);
-        g_primary = create_vm(g_enhanced ? 21 : 17, g_pos);
-        g_secondary = create_vm(25, g_pos);
+        create_vm(g_enhanced ? 21 : 17, g_pos, &g_primary);
+        create_vm(25, g_pos, &g_secondary);
         invulnerable(110);
         break;
     }
@@ -439,11 +430,10 @@ bool bomb_activate_from_card() {
 bool bomb_active() { return g_active; }
 
 void bomb_marisa_hit(const float* pos) {
-    AnmVm* effect = create_vm(20, pos);
+    AnmVm* effect = create_vm(20, pos, nullptr);
     float* velocity = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(effect) + 0x4c4);
     velocity[0] = std::cos(g_angle) * 6.5f;
     velocity[1] = std::sin(g_angle) * 6.5f;
-    anm_manage_vm(effect, nullptr);
 }
 int bomb_elapsed_frames() { return g_timer; }
 void bomb_set_card_active(bool active) { g_card_active = active; }
