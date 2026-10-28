@@ -1156,8 +1156,9 @@ void player_attack_update(Player* p) {
         }
         if(a->handler_update==1 && a->active==1) {
             stage::Enemy* target=a->unk_090?stage::find_enemy(a->unk_090):nullptr;
-            if(!target) {
-                float nearest=1000000;
+            // 45f7c0 only searches when the saved ID was zero on entry.
+            if(a->unk_090==0 && stage::g_enemy_manager) {
+                float nearest=256.0f*256.0f;
                 for(auto* node=stage::g_enemy_manager->enemy_head;node;node=node->next) {
                     auto* e=node->self;if(e->flag&0xc000021)continue;
                     const float dx=e->x-a->motion.x,dy=e->y-a->motion.y,d=dx*dx+dy*dy;
@@ -1167,14 +1168,21 @@ void player_attack_update(Player* p) {
             }
             if(target && (target->flag&0xc000021)==0) {
                 const float target_angle=std::atan2(target->y-a->motion.y,target->x-a->motion.x);
-                const float delta=std::remainder(target_angle-a->motion.angle,kTwoPiF);
-                if(a->life>59)a->motion.speed+=0.2f;
+                float delta=target_angle-a->motion.angle;
+                if(delta>kPiF)delta=target_angle-(a->motion.angle+kTwoPiF);
+                else if(a->motion.angle-target_angle>kPiF)delta=target_angle-(a->motion.angle-kTwoPiF);
+                if(a->life_i>=60)a->motion.speed+=0.2f;
                 else {
                     if(std::fabs(delta)<0.261799395f)a->motion.speed=std::fmin(a->motion.speed+0.2f,16.0f);
                     else if(std::fabs(delta)>=0.785398185f)a->motion.speed=std::fmax(a->motion.speed-0.2f,4.0f);
-                    a->motion.angle=std::remainder(a->motion.angle+delta*0.08f,kTwoPiF);
+                    a->motion.angle+=delta*0.08f;
+                    while(a->motion.angle>kPiF)a->motion.angle-=kTwoPiF;
+                    while(a->motion.angle< -kPiF)a->motion.angle+=kTwoPiF;
                 }
-            } else a->motion.speed=std::fmin(a->motion.speed+0.1f,16.0f);
+            } else {
+                a->unk_090=0;
+                a->motion.speed=std::fmin(a->motion.speed+0.1f,16.0f);
+            }
         } else if(a->handler_update==3 && a->active==1)a->motion.speed+=0.3f;
         else if(a->handler_update==4 && a->active==1) {
             if((a->flags&0x3c)==0) {
