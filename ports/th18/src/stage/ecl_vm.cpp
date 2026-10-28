@@ -879,13 +879,23 @@ bool cancel_one_enemy_bullet(float x,float y,float radius,int kind) {
     }
     return false;
 }
+// 4294b0: straight edges include tangency; the four corner checks are strict.
+static bool cancel_rectangle_intersects(float x,float y,float half_width,float half_height,float radius) {
+    if (!((half_width+radius<std::fabs(x) || half_height<std::fabs(y)) &&
+          (half_width<std::fabs(x) || half_height+radius<std::fabs(y)))) return true;
+    const float x0=(x-half_width)*(x-half_width),x1=(x+half_width)*(x+half_width);
+    const float y0=(y-half_height)*(y-half_height),y1=(y+half_height)*(y+half_height);
+    const float r2=radius*radius;
+    return y0+x0<r2 || y0+x1<r2 || y1+x0<r2 || y1+x1<r2;
+}
 void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind) {
     const float c=std::cos(angle),s=std::sin(angle);
     for(auto& b:g_enemy_bullets) {
+        if(b.cancel_state!=0 || b.delay!=0)continue;
         const float dx=b.x-x,dy=b.y-y;
-        const float rx=std::max(std::fabs(c*dx+s*dy)-width*0.5f,0.0f);
-        const float ry=std::max(std::fabs(c*dy-s*dx)-height*0.5f,0.0f);
-        if(b.cancel_state==0 && b.delay==0 && rx*rx+ry*ry<=b.radius*b.radius)bullet_cancel(b,kind);
+        const float radius=b.radius*b.size_scale;
+        if(cancel_rectangle_intersects(c*dx+s*dy,c*dy-s*dx,width*0.5f,height*0.5f,radius) &&
+           cancel_rectangle_intersects(b.x,b.y-224.0f,192.0f,224.0f,radius))bullet_cancel(b,kind);
     }
 }
 void cancel_enemy_bullets_rectangle(float x,float y,float width,float height,float angle,int kind) {
