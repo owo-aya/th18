@@ -102,11 +102,12 @@ void player_options_rebuild(Player* p) {
     const auto* sht = static_cast<const uint8_t*>(p->sht);
     static constexpr int option_script[] = {15,17,12,10};
     static constexpr int full_script[] = {16,18,13,12};
-    auto create=[&](int script) {
+    auto create=[&](int script, bool front) {
         AnmVm* vm=anm_vm_alloc(player_anm(p));
         anm_vm_bind_script(vm,player_anm(p),script);
         vm->draw_layer=14;vm->flags3=(vm->flags3&~0x200000u)|0x101000u;
         anm_vm_update(vm);vm->extra_x=0;vm->extra_y=-1000;
+        vm->node_flags=front?2u:0u; // 45d5e0: full-power overlays use 488400, base options use 488350.
         anm_queue_add(vm);return vm;
     };
     // 0045d5e0 refreshes full-power visuals on every explicit call.
@@ -114,7 +115,7 @@ void player_options_rebuild(Player* p) {
         if (g_option_max_vm[i]) anm_vm_free(g_option_max_vm[i]);
         g_option_max_vm[i]=nullptr;
         if(full && i<power) {
-            g_option_max_vm[i]=create(full_script[g_player_character]);
+            g_option_max_vm[i]=create(full_script[g_player_character],true);
             anm_manage_vm(g_option_max_vm[i],&g_option_max_vm[i]);
         }
     }
@@ -136,7 +137,7 @@ void player_options_rebuild(Player* p) {
                 put_f32(p,q+0xac,*reinterpret_cast<const float*>(sht+0x44+slot*8));
             }
             put_i32(p,q+0xd4,1);
-            g_option_vm[i]=create(option_script[g_player_character]);
+            g_option_vm[i]=create(option_script[g_player_character],false);
             anm_manage_vm(g_option_vm[i],&g_option_vm[i]);
         }
         g_option_power=power;
