@@ -400,6 +400,7 @@ static void start_bomb() {
     case 1:
         sound_play_se(49);
         g_primary = create_vm(g_enhanced ? 29 : 22, g_pos);
+        stage_master_spark_shake(g_enhanced);
         g_secondary = create_vm(36, g_pos);
         g_player->flags_4779c |= 4;
         invulnerable(120);

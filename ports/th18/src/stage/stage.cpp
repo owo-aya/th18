@@ -381,6 +381,51 @@ void stage_screen_shake(int duration, int from, int to) {
     thread_enqueue_logic(shake->task);
 }
 
+struct MasterSparkShake {
+    MasterSparkShake* next;
+    Thread* task;
+    float time;
+    int hold;
+};
+static MasterSparkShake* g_master_spark_shakes;
+
+// 475e40: 60-frame rise, hold, 30-frame fall; draws from gameplay RNG (4cf288).
+static ThreadStatus master_spark_shake_update(void* context) {
+    auto* shake = static_cast<MasterSparkShake*>(context);
+    if (stage_session() == nullptr || (stage_session_flags() & 0x77u) != 0)
+        return THREAD_CONTINUE;
+    const float speed = stage::g_speed_scale;
+    shake->time += speed > 0.99f && speed < 1.01f ? 1.0f : speed;
+    const int tick = static_cast<int>(shake->time);
+    if (tick < 90 + shake->hold) {
+        const float fraction = tick < 60 ? shake->time / 60.0f :
+            tick < 60 + shake->hold ? 1.0f : (90 + shake->hold - shake->time) / 30.0f;
+        const float amplitude = 3.0f * fraction;
+        const uint32_t x = rng_next() % 3;
+        const uint32_t y = rng_next() % 3;
+        const float offset_x = x == 0 ? 0.0f : x == 1 ? amplitude : -amplitude;
+        const float offset_y = y == 0 ? 0.0f : y == 1 ? amplitude : -amplitude;
+        gfx_set_camera_shake(1, offset_x, offset_y);
+        gfx_set_camera_shake(3, offset_x, offset_y);
+        return THREAD_CONTINUE;
+    }
+    MasterSparkShake** link = &g_master_spark_shakes;
+    while (*link != shake) link = &(*link)->next;
+    *link = shake->next;
+    delete shake;
+    return THREAD_DONE;
+}
+
+void stage_master_spark_shake(bool enhanced) {
+    auto* shake = new MasterSparkShake{g_master_spark_shakes,
+        thread_create(master_spark_shake_update), 0, enhanced ? 420 : 240};
+    g_master_spark_shakes = shake;
+    thread_set_ctx(shake->task, shake);
+    thread_set_priority(shake->task, 0x14);
+    thread_set_paused(shake->task, true);
+    thread_enqueue_logic(shake->task);
+}
+
 // 43cd00: the award follows front111's alpha at the original (224,200).
 static void draw_clear_bonus() {
     if (g_stage_clear_vm == nullptr) return;
@@ -732,6 +777,12 @@ void stage_session_start(StageSession* s) {
 // 0x004432c0 的端口子集：停会话任务、销毁对象管理器/敌机管理器/关卡对象与会话对象。
 void stage_session_destroy(StageSession* s) {
     if (s == nullptr) return;
+    while (g_master_spark_shakes != nullptr) {
+        MasterSparkShake* shake = g_master_spark_shakes;
+        g_master_spark_shakes = shake->next;
+        thread_remove(shake->task);
+        delete shake;
+    }
     while (g_screen_shakes != nullptr) {
         ScreenShake* shake = g_screen_shakes;
         g_screen_shakes = shake->next;
