@@ -30,7 +30,7 @@ struct Laser : Object {
     union {LineArgs line;InfiniteArgs infinite;CurveArgs curve;};
     AnmVm* body;AnmVm* start;AnmVm* tip;
     uint32_t effects;Extra effect[32];float effect_time[32];
-    float accel_x,accel_y,turn_angle,turn_speed;int turn_count;
+    float accel_x,accel_y,turn_angle,turn_speed,reflection_speed;int turn_count;
     int cursor,jump_count,type,color;
     float outside,delay,immune,state_time,graze_time,age;
     std::vector<CurveNode> nodes;
@@ -39,7 +39,12 @@ struct Laser : Object {
     Path path;
 };
 
-float wrap(float a){return std::remainder(a,2*pi);}
+float wrap(float a) {
+    int count=0;
+    while(a>pi){a-=2*pi;if(count++>32)break;}
+    while(a<-pi){a+=2*pi;if(count++>32)break;}
+    return a;
+}
 float aim(float x,float y){return std::atan2(g_player->y-y,g_player->x-x);}
 void position_vm(AnmVm* vm,float x,float y,float z=0){vm->extra_x=x;vm->extra_y=y;vm->extra_z=z;}
 AnmVm* new_vm(Laser* l,int script,int callback) {
@@ -83,7 +88,7 @@ void line_extras(Laser& l) {
             case 0x10:l.turn_angle=x.f[0];l.turn_speed=x.f[1]<=-999?l.speed:x.f[1];l.turn_count=0;l.effects|=0x10;break;
             case 0x40: {
                 if(x.i[0]>0) {
-                    --source.i[0];l.effects|=0x40;
+                    --source.i[0];l.effects|=0x40;l.reflection_speed=x.f[0]<0?l.speed:x.f[0];
                 }break;
             }
             case 0x80:l.immune=float(x.i[0]);break;
@@ -95,12 +100,19 @@ void line_extras(Laser& l) {
             case 0x2000:fire_extra(l,x,l.line.extras[l.cursor++]);break;
             case 0x8000:l.label=x.i[0];break;
             case 0x10000:
-                if(x.i[1]<=0 || ++l.jump_count<x.i[1])l.cursor=x.i[0];else l.jump_count=0;
+                // 4494f0: the first encounter jumps even when the count is one.
+                if(x.i[1]>0) {
+                    if(l.jump_count==0)l.jump_count=x.i[1];
+                    else if(l.jump_count==1){l.jump_count=0;break;}
+                    else --l.jump_count;
+                }
+                l.cursor=x.i[0];
                 break;
             case 0x100000:l.body->flags2=(l.body->flags2&~0x1e0u)|(x.i[0]==0?0:0x20);break;
-            case 0x80000000:l.effects|=0x80000000u;break;
+            case 0x80000000:if(x.i[0]>0){l.effects|=0x80000000u;l.effect_time[31]=float(x.i[0]);}break;
             }
         }
+        const bool had_effects=l.effects!=0;
         for(int bit=0;bit<32;++bit) {
             const uint32_t flag=1u<<bit;if((l.effects&flag)==0)continue;
             const Extra& x=l.effect[bit];float& time=l.effect_time[bit];bool end=false;
@@ -112,17 +124,18 @@ void line_extras(Laser& l) {
                 else {l.angle=wrap(l.angle+l.turn_angle);l.speed=l.turn_speed;l.vx=std::cos(l.angle)*l.speed;l.vy=std::sin(l.angle)*l.speed;time=0;end=++l.turn_count>=x.i[1];transform_sound(l);}
             } else if(flag==0x40) {
                 const float c=std::cos(l.angle),s=std::sin(l.angle),tx=l.x+c*l.length,ty=l.y+s*l.length;
-                const bool edges[]={ty<=0 && (x.i[1]&1),ty>=448 && (x.i[1]&2),tx<=-192 && (x.i[1]&4),tx>=192 && (x.i[1]&8)};
+                const bool edges[]={ty<0 && (x.i[1]&1),ty>448 && (x.i[1]&2),tx<-192 && (x.i[1]&4),tx>192 && (x.i[1]&8)};
                 for(int edge=0;edge<4;++edge)if(edges[edge]) {
-                    LineArgs a=l.line;a.offset=0;a.speed=x.f[0]<0?l.speed:x.f[0];
+                    LineArgs a=l.line;a.offset=0;a.speed=l.reflection_speed;a.pos[2]=0;
                     if(edge<2){const float y=edge==0?0.0f:448.0f;a.pos[0]=l.x+c*(y-l.y)/s;a.pos[1]=y;a.angle=-l.angle;}
                     else{const float xx=edge==2?-192.0f:192.0f;a.pos[0]=xx;a.pos[1]=l.y+s*(xx-l.x)/c;a.angle=wrap(-l.angle-pi);}
-                    if((x.i[1]&0x10)==0)create_laser(0,&a);end=true;transform_sound(l);
+                    if((x.i[1]&0x10)==0)create_laser(0,&a);end=true;
                 }
-            } else if(flag==0x80000000u) {if(time>=x.i[0])end=true;else time+=stage::g_speed_scale;}
+                if(end)transform_sound(l);
+            } else if(flag==0x80000000u) {if(int(time)<1)end=true;else time-=stage::g_speed_scale;}
             if(end){l.effects&=~flag;completed=true;}
         }
-        if(l.effects && l.immune>0)l.immune-=stage::g_speed_scale;
+        if(had_effects && l.immune!=0)--l.immune;
     }while(completed);
 }
 
@@ -187,15 +200,17 @@ void axis_collision(Laser& l,bool query) {
 bool update_line(Laser& l) {
     line_extras(l);
     if(l.length<l.line.max_length)l.length=std::min(l.length+l.speed*stage::g_speed_scale,l.line.max_length);
-    else {l.traveled+=l.speed*stage::g_speed_scale;l.x+=l.vx*stage::g_speed_scale;l.y+=l.vy*stage::g_speed_scale;}
-    if(l.line.end_travel>0 && l.traveled+l.length>l.line.end_travel) {
-        l.length=l.line.max_length=l.line.end_travel-l.traveled;if(l.length<=0)return true;
+    else {
+        l.traveled+=l.speed*stage::g_speed_scale;l.x+=l.vx*stage::g_speed_scale;l.y+=l.vy*stage::g_speed_scale;
+        if(l.line.end_travel>0 && l.traveled+l.length>l.line.end_travel) {
+            l.length=l.line.max_length=l.line.end_travel-l.traveled;if(l.length<=0)return true;
+        }
     }
-    if(l.outside>0)l.outside-=stage::g_speed_scale;if(l.delay>0)l.delay-=stage::g_speed_scale;
     const float tx=l.x+std::cos(l.angle)*l.length,ty=l.y+std::sin(l.angle)*l.length;
-    const bool out0=l.x< -192-l.width||l.x>192+l.width||l.y< -l.width||l.y>448+l.width;
-    const bool out1=tx< -192-l.width||tx>192+l.width||ty< -l.width||ty>448+l.width;
-    if(l.outside<=0 && l.delay<=0 && out0 && out1)return true;
+    const bool out0=l.x<=-192-l.width||l.x>=192+l.width||l.y<=-l.width||l.y>=448+l.width;
+    const bool out1=tx<=-192-l.width||tx>=192+l.width||ty<=-l.width||ty>=448+l.width;
+    if(int(l.outside)<1 && int(l.delay)<1 && out0 && out1)return true;
+    if(int(l.outside)>0)l.outside-=stage::g_speed_scale;if(int(l.delay)>0)l.delay-=stage::g_speed_scale;
     l.body->scale_x=l.width/l.body->sprite_h;l.body->scale_y=l.length/l.body->sprite_w;
     anm_vm_update(l.body);anm_vm_update(l.tip);if(l.traveled==0)anm_vm_update(l.start);
     axis_collision(l,false);return false;
@@ -209,11 +224,13 @@ bool update_infinite(Laser& l) {
         else if(x.type==0x400)l.state=3;
         else if(x.type==0x100000)l.body->flags2=(l.body->flags2&~0x1e0u)|(x.i[0]==0?0:0x20);
     }
-    l.length=std::min(l.length+l.speed*stage::g_speed_scale,a.max_length);
-    l.angle+=a.angle_step*stage::g_speed_scale;
-    l.x=a.origin[0]+a.position_step[0]*stage::g_speed_scale+std::cos(l.angle)*a.axis_offset;
-    l.y=a.origin[1]+a.position_step[1]*stage::g_speed_scale+std::sin(l.angle)*a.axis_offset;
-    if(a.flags&1) {auto* boss=stage::find_enemy(stage::g_enemy_manager->boss_id[0]);if(boss){l.x+=boss->x;l.y+=boss->y;}}
+    if(l.length<a.max_length)l.length=std::min(l.length+l.speed*stage::g_speed_scale,a.max_length);
+    l.angle=wrap(l.angle+a.angle_step*stage::g_speed_scale);
+    l.x=a.origin[0];l.y=a.origin[1];l.z=a.origin[2];
+    // 44cae0 replaces the origin with the boss position before adding local offsets.
+    if(a.flags&1) {auto* boss=stage::find_enemy(stage::g_enemy_manager->boss_id[0]);if(boss){l.x=boss->x;l.y=boss->y;l.z=boss->z;}}
+    l.x+=a.position_step[0]*stage::g_speed_scale+std::cos(l.angle)*a.axis_offset;
+    l.y+=a.position_step[1]*stage::g_speed_scale+std::sin(l.angle)*a.axis_offset;l.z+=a.position_step[2]*stage::g_speed_scale;
     switch(l.state) {
     case 3:if(l.state_time>=a.delay){l.state_time=0;l.state=4;}break;
     case 4:
@@ -243,7 +260,7 @@ void sample_path(const Path& p,float time,CurveNode& n) {
         const float vx=c*p.speed+std::cos(p.angle_step)*p.accel,vy=s*p.speed+std::sin(p.angle_step)*p.accel;
         n.x+=vx*t;n.y+=vy*t;n.angle=std::atan2(vy,vx);n.length=std::sqrt(vx*vx+vy*vy);
     } else if(p.type==2) {
-        for(int i=0;i<int(std::floor(t));++i){n.x+=std::cos(n.angle)*n.length;n.y+=std::sin(n.angle)*n.length;n.angle+=p.angle_step;n.length+=p.accel;}
+        for(int i=0;i<int(t);++i){n.x+=std::cos(n.angle)*n.length;n.y+=std::sin(n.angle)*n.length;n.angle=wrap(n.angle+p.angle_step);n.length+=p.accel;}
         const float fraction=t-std::floor(t);n.x+=fraction*std::cos(n.angle)*n.length;n.y+=fraction*std::sin(n.angle)*n.length;
     }
 }
@@ -258,17 +275,19 @@ void reverse_path(const Path& p,float time,const CurveNode& prev,CurveNode& n) {
     } else if(p.type==2) {
         const float fraction=time-std::floor(time);
         n.x-=fraction*std::cos(prev.angle)*prev.length;n.y-=fraction*std::sin(prev.angle)*prev.length;
-        n.angle=prev.angle-p.angle_step;n.length=prev.length-p.accel;
+        n.angle=wrap(prev.angle-p.angle_step);n.length=prev.length-p.accel;
         n.x-=(1-fraction)*std::cos(n.angle)*n.length;n.y-=(1-fraction)*std::sin(n.angle)*n.length;
     }
 }
 void curve_geometry(Laser& l) {
+    bool sampled=false;
     for(size_t i=0;i<l.nodes.size();++i) {
         const float time=l.age-float(i);auto& n=l.nodes[i];
-        if(time<0){n.x=l.curve.pos[0];n.y=l.curve.pos[1];n.z=l.curve.pos[2];continue;}
+        if(time<0){n.x=l.curve.pos[0];n.y=l.curve.pos[1];n.z=l.curve.pos[2];n.angle=l.curve.angle;n.length=l.curve.speed;std::memset(n.cached,0,sizeof(n.cached));continue;}
         for(Path* p=&l.path;p;p=p->next)if(p->start<=time && time<p->end) {
-            if(i==0)sample_path(*p,time,n);else reverse_path(*p,time,l.nodes[i-1],n);break;
+            if(!sampled)sample_path(*p,time,n);else reverse_path(*p,time,l.nodes[i-1],n);break;
         }
+        sampled=true;
     }
 }
 void append_path(Laser& l,const Extra& x) {
@@ -334,7 +353,7 @@ void curve_extras(Laser& l) {
             }
             if(end){l.effects&=~flag;completed=true;}
         }
-        if(l.immune>0)l.immune-=stage::g_speed_scale;
+        if(l.immune!=0)--l.immune;
     }while(completed);
 }
 void init_curve(Laser& l) {
@@ -400,28 +419,45 @@ void curve_collision(Laser& l,bool query) {
 bool update_curve(Laser& l) {
     curve_extras(l);if((l.flags&0x10)==0)curve_geometry(l);
     bool outside=true;for(const auto& n:l.nodes)if(n.x>=-192-l.width && n.x<=192+l.width && n.y>=-l.width && n.y<=448+l.width){outside=false;break;}
-    if(l.outside>0)l.outside-=stage::g_speed_scale;
-    if(l.outside<=0 && (l.effects&0x100)==0 && outside)return true;
+    if(int(l.outside)>0 || (l.effects&0x100))l.outside-=stage::g_speed_scale;
+    else if(outside)return true;
     curve_collision(l,false);anm_vm_update(l.body);anm_vm_update(l.tip);l.age+=stage::g_speed_scale;return false;
 }
 void draw_curve(Laser& l) {
     auto& vertices=l.vertices;vertices.resize(l.nodes.size()*2);
     const float half_width=l.curve.width*0.5f;
+    float u=0;const float u_step=1.0f/float(l.nodes.size()-1);
     float shake_x,shake_y;gfx_get_camera_shake(gfx_current_camera(),shake_x,shake_y);
     for(size_t i=0;i<l.nodes.size();++i) {
-        const auto& n=l.nodes[i];float normal=n.angle+pi*0.5f;
-        if(i)normal=l.nodes[i-1].angle+pi*0.5f+wrap(n.angle-l.nodes[i-1].angle)*0.5f;
-        const float x=std::cos(normal)*half_width,y=std::sin(normal)*half_width,u=float(i)/float(l.nodes.size()-1);
-        vertices[i*2]={n.x+x+224+shake_x,n.y+y+16+shake_y,0,1,0xffffffff,u,l.body->uv[0]};
-        vertices[i*2+1]={n.x-x+224+shake_x,n.y-y+16+shake_y,0,1,0xffffffff,u,l.body->uv[2]};
+        const auto& n=l.nodes[i];
+        for(int side=0;side<2;++side) {
+            const float turn=side==0?pi*0.5f:-pi*0.5f;
+            float normal=wrap(n.angle+turn);
+            if(i)normal=wrap(normal+wrap(wrap(l.nodes[i-1].angle+turn)-normal)*0.5f);
+            const float x=std::cos(normal)*half_width,y=std::sin(normal)*half_width;
+            vertices[i*2+side]={n.x+x+224+shake_x,n.y+y+16+shake_y,0,1,0xffffffff,u,l.body->uv[side==0?1:3]};
+        }
+        u+=u_step;
     }
+    // 480f70: custom strip vertices retain white color, but obey VM visibility/sampling.
+    if((l.body->flags2&3)==3 && (l.body->color>>24)!=0) {
     auto* dev=gfx_device();dev->SetTexture(0,static_cast<IDirect3DTexture9*>(const_cast<void*>(l.body->texture)));
     dev->SetRenderState(D3DRS_ZENABLE,FALSE);dev->SetRenderState(D3DRS_LIGHTING,FALSE);dev->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
     dev->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);dev->SetRenderState(D3DRS_BLENDOP,D3DBLENDOP_ADD);dev->SetRenderState(D3DRS_SRCBLEND,D3DBLEND_SRCALPHA);dev->SetRenderState(D3DRS_DESTBLEND,(l.body->flags2&0x1e0)==0x20?D3DBLEND_ONE:D3DBLEND_INVSRCALPHA);
     dev->SetRenderState(D3DRS_ALPHATESTENABLE,TRUE);dev->SetRenderState(D3DRS_ALPHAFUNC,D3DCMP_GREATER);dev->SetRenderState(D3DRS_ALPHAREF,0);
     dev->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_MODULATE);dev->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_TEXTURE);dev->SetTextureStageState(0,D3DTSS_COLORARG2,D3DTA_DIFFUSE);
     dev->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_MODULATE);dev->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE);dev->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE);
+    const DWORD filter=l.body->flags3&0x2000?D3DTEXF_POINT:D3DTEXF_LINEAR;
+    dev->SetSamplerState(0,D3DSAMP_MINFILTER,filter);dev->SetSamplerState(0,D3DSAMP_MAGFILTER,filter);
+    const D3DTEXTUREADDRESS address[]={D3DTADDRESS_WRAP,D3DTADDRESS_CLAMP,D3DTADDRESS_MIRROR};
+    const uint32_t address_u=(l.body->flags3>>2)&3,address_v=l.body->flags3&3;
+    if(address_u<3)dev->SetSamplerState(0,D3DSAMP_ADDRESSU,address[address_u]);
+    if(address_v<3)dev->SetSamplerState(0,D3DSAMP_ADDRESSV,address[address_v]);
     dev->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE|D3DFVF_TEX1);dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,UINT(vertices.size()-2),vertices.data(),sizeof(CurveVertex));
+    }
+    if(int(l.age)<=int(l.nodes.size())) {
+        const auto& tail=l.nodes.back();position_vm(l.tip,tail.x,tail.y,tail.z);anm_draw_vm(l.tip);
+    }
     if(int(l.age)<=int(l.nodes.size())){const auto& n=l.nodes.back();position_vm(l.tip,n.x,n.y,n.z);anm_draw_vm(l.tip);}
 }
 
@@ -479,7 +515,7 @@ void clear_phase_lasers() {
     // 448fa0 resets the laser cancellation timer and immunity before clearing.
     for(Object* object=manager->head;object;) {
         Object* next=object->next;auto& laser=*static_cast<Laser*>(object);
-        laser.state_time=0;laser.immune=0;clear_one(laser,1);object=next;
+        laser.outside=0;laser.immune=0;clear_one(laser,1);object=next;
     }
 }
 int cancel_circle(float x,float y,float radius,int32_t kind,int respect) {

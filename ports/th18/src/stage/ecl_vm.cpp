@@ -1063,6 +1063,9 @@ static void bullet_extra_start(EnemyBullet& b) {
         case 0x80000:
             b.effect_flags|=x.type;
             b.accel[bit][0]=std::cos(x.f[0])*x.f[1];b.accel[bit][1]=std::sin(x.f[0])*x.f[1];break;
+        case 0x80000000:case 0x4000000:
+            if(x.i[0]>0){b.effect_flags|=x.type;b.timers[bit]=float(x.i[0]);}
+            break;
         case 0x40000000:b.effect_flags|=x.type;break;
         case 0x8000000: {
             // 4270xx..427530: the following ET holds the rest of the laser arguments.
@@ -1217,7 +1220,8 @@ static void bullet_extra_update(EnemyBullet& b) {
                 } else {b.effect_flags&=~9u;completed=true;}
                 break;
             case 0x80000000:case 0x4000000:
-                if(time>=x.i[0])end=true;else time+=g_speed_scale;
+                if(int32_t(time)<1)end=true;
+                else time-=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
                 break;
             case 0x100:if(time>=x.i[0])end=true;else time+=g_speed_scale;break;
             case 0x20000: {
@@ -2132,6 +2136,15 @@ int32_t script_vm_run(EclThread* t,float delta) {
         case 82:{float* v=vm_write_float(t,ins,0);*v=normalize_angle(*v);break;}
         case 84:{const float v=stack_float(stack_pop(t));stack_push_float(t,-v);break;}
         case 87:{float x1=vm_read_number(t,ins,1),y1=vm_read_number(t,ins,2),x2=vm_read_number(t,ins,3),y2=vm_read_number(t,ins,4);*vm_write_float(t,ins,0)=std::atan2(y2-y1,x2-x1);break;}
+        case 94: {
+            // 48d0c8: ellipse coordinates, with the major axis rotated by argument 4.
+            const float angle=vm_read_number(t,ins,2),radius=vm_read_number(t,ins,3);
+            const float rotation=vm_read_number(t,ins,4),ratio=vm_read_number(t,ins,5);
+            const float delta=bullet_turn_angle(angle-rotation);
+            const float x=std::cos(delta)*radius*ratio,y=std::sin(delta)*radius;
+            const float s=std::sin(rotation),c=std::cos(rotation);
+            *vm_write_float(t,ins,0)=x*c-y*s;*vm_write_float(t,ins,1)=y*c+x*s;break;
+        }
         case 91: {
             const int slot=vm_read_int(t,ins,0);
             t->task_instruction[slot][0]=t->sub_index;t->task_instruction[slot][1]=t->offset;

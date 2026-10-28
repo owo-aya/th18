@@ -786,6 +786,16 @@ void anm_draw_vm(AnmVm* vm)
             multiplied |= (((vm->color >> shift) & 255) * ((vm->color_alt >> shift) & 255) / 255) << shift;
         color = multiplied;
     }
+    if(color_mode==0 || color_mode==1 || color_mode==4) {
+        if((vm->flags3&0x8000000u) && vm->parent) {
+            const uint32_t parent_color=static_cast<AnmVm*>(vm->parent)->inherited_color;
+            uint32_t inherited=0;
+            for(int shift=0;shift<32;shift+=8)
+                inherited|=(std::min)(255u,((color>>shift)&255)*((parent_color>>shift)&255)>>7)<<shift;
+            color=inherited;
+        }
+        vm->inherited_color=color;
+    }
     uint32_t r = ((color >> 16) & 0xff) * manager->color_r >> 7;
     uint32_t g = ((color >> 8) & 0xff) * manager->color_g >> 7;
     uint32_t b = (color & 0xff) * manager->color_b >> 7;
@@ -1354,6 +1364,7 @@ void anm_vm_reset(AnmVm* vm)
     vm->sprite_id = 0;
     vm->color = 0xffffffff;
     vm->color_alt = 0xffffffff;
+    vm->inherited_color = 0;
     vm->pos_x = 0.0f;
     vm->pos_y = 0.0f;
     vm->pos_z = 0.0f;
@@ -1964,6 +1975,19 @@ void anm_execute_script(AnmVm* vm)
             vm->script_cursor += length;
             break;
         }
+        case 121: {
+            const float left=float_argument(vm,payload,mask,1),right=float_argument(vm,payload,mask,2);
+            float* target=const_cast<float*>(reinterpret_cast<const float*>(payload));
+            if(mask&1)target=float_variable(vm,target);
+            *target=std::fmod(left,right);vm->script_cursor+=length;break;
+        }
+        case 122: {
+            uint32_t id=*reinterpret_cast<const uint32_t*>(payload);
+            uint32_t range=*reinterpret_cast<const uint32_t*>(payload+4);
+            if(mask&2)range=anm_vm_get_var(vm,range);
+            *anm_vm_var_ptr(vm,&id,mask)=range==0?0:anm_random_u32()%range;
+            vm->script_cursor+=length;break;
+        }
         case 124:
         case 125:
         {
@@ -2013,13 +2037,14 @@ void anm_execute_script(AnmVm* vm)
             vm->expr_stack_a2 = static_cast<float>(static_cast<int32_t>(vm->time));
             break;
 
+        case 202: // 整数相等时跳转；effect150/151 选择粒子所在层。
         case 204: // 整数不等时跳转；effect142随机选择纵向镜像。
         {
             uint32_t left = *reinterpret_cast<const uint32_t*>(payload);
             uint32_t right = *reinterpret_cast<const uint32_t*>(payload + 4);
             if (mask & 1) left = anm_vm_get_var(vm, left);
             if (mask & 2) right = anm_vm_get_var(vm, right);
-            if (left != right) {
+            if (instr->type==202 ? left==right : left!=right) {
                 vm->script_cursor = *reinterpret_cast<const int32_t*>(payload + 8);
                 vm->time = *reinterpret_cast<const int32_t*>(payload + 12);
                 vm->expr_stack_a2 = static_cast<float>(static_cast<int32_t>(vm->time));
@@ -2103,10 +2128,16 @@ void anm_execute_script(AnmVm* vm)
         }
 
         case 300: // 设置 sprite（原版 sub_477b00，参数 mask bit0 表示走表达式）
+        case 301: // 479a5d: base + Rand32 % count，也消耗带 sprite callback 的随机数。
         {
             uint32_t sprite = *reinterpret_cast<const uint32_t*>(payload);
             if ((mask & 1) != 0)
                 sprite = anm_vm_get_var(vm, sprite);
+            if(instr->type==301) {
+                uint32_t count=*reinterpret_cast<const uint32_t*>(payload+4);
+                if(mask&2)count=anm_vm_get_var(vm,count);
+                sprite+=anm_random_u32()%count;
+            }
             vm->script_sprite_id = static_cast<uint16_t>(sprite);
             if (vm->sprite_callback == 1)
                 sprite = stage::bullet_sprite_for_vm(vm, static_cast<int>(sprite));
@@ -2182,16 +2213,23 @@ void anm_execute_script(AnmVm* vm)
         }
 
         case 407: // sub_405a00..405aa0：位置插值，duration/type/x/y/z
+        case 420: // 47a82e: 起点、终点和两端切向量构成 Hermite 轨迹。
         case 433: // 同一个位置插值器，目标由angle/radius换算。
         {
             uint8_t* base = reinterpret_cast<uint8_t*>(vm) + 0x90;
             float* f = reinterpret_cast<float*>(base);
             int32_t* i = reinterpret_cast<int32_t*>(base);
             std::memset(base, 0, 0x58);
-            f[0] = vm->pos_x;
-            f[1] = vm->pos_y;
-            f[2] = vm->pos_z;
-            if (instr->type == 433) {
+            const float* position=vm->flags2&0x400u?
+                reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(vm)+0x4e4):&vm->pos_x;
+            std::memcpy(f,position,3*sizeof(float));
+            if(instr->type==420) {
+                for(int axis=0;axis<3;++axis) {
+                    f[6+axis]=float_argument(vm,payload,mask,1+axis);
+                    f[3+axis]=float_argument(vm,payload,mask,4+axis);
+                    f[9+axis]=float_argument(vm,payload,mask,7+axis);
+                }
+            } else if (instr->type == 433) {
                 const float radius = float_argument(vm, payload, mask, 3);
                 const float angle = float_argument(vm, payload, mask, 2);
                 f[3] = std::cos(angle) * radius;
@@ -2206,7 +2244,7 @@ void anm_execute_script(AnmVm* vm)
             i[19] = 1;
             i[20] = *reinterpret_cast<const int32_t*>(payload);
             if (mask & 1) i[20] = anm_vm_get_var(vm, i[20]);
-            i[21] = *reinterpret_cast<const int32_t*>(payload + 4);
+            i[21] = instr->type==420?8:*reinterpret_cast<const int32_t*>(payload+4);
             vm->script_cursor += length;
             break;
         }
@@ -2340,6 +2378,9 @@ void anm_execute_script(AnmVm* vm)
             break;
         }
 
+        case 315:
+            vm->flags3=(vm->flags3&~0x8000000u)|((uint32_t(payload[0])<<27)&0x8000000u);
+            vm->script_cursor+=length;break;
         case 313: // flags3 混合位 0x1c00000 = value << 22
         {
             uint32_t value = *reinterpret_cast<const uint32_t*>(payload);
@@ -2750,9 +2791,8 @@ static void update_vm_self(AnmVm* vm)
     {
         float pos[3];
         interp_eval3(raw + 0x90, pos);
-        vm->pos_x = pos[0];
-        vm->pos_y = pos[1];
-        vm->pos_z = pos[2];
+        float* position=vm->flags2&0x400u?reinterpret_cast<float*>(raw+0x4e4):&vm->pos_x;
+        std::memcpy(position,pos,sizeof(pos));
     }
     if (*reinterpret_cast<int32_t*>(raw + 0x1c0) != 0)
     {

@@ -149,7 +149,8 @@ struct AnmVm {
     // 颜色：字节 B@0x524 G@0x525 R@0x526 A@0x527（sub_47c750）。
     uint32_t color;              // +0x524
     uint32_t color_alt;          // +0x528 第二套颜色（混合用），字节序同上
-    uint8_t  pad_52c[0x08];      // +0x52c
+    uint32_t inherited_color;    // +0x52c 绘制时缓存，子 VM 按 /128 继承
+    uint8_t  pad_530[0x04];      // +0x530
     uint32_t flags2;             // +0x534 bit0/bit1 为绘制开关；bit26..30 = AnmVmRenderType
     uint32_t flags3;             // +0x538 bit 0x180 隐藏；0x40000 忽略父变换；
                                  // 0x300000 坐标原点；0x1c00000 坐标缩放模式；
