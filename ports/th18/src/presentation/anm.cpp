@@ -296,6 +296,10 @@ float float_argument(AnmVm* vm, const uint8_t* payload, uint16_t mask, int index
     if (id >= 10016 && id <= 10021) return stage_background_anm_value(id);
     if (id == 10026) return total_rotation(vm)[2];
     if (id == 10029) return static_cast<float>(*reinterpret_cast<const int32_t*>(raw + 0x4e0));
+    // 477ea0: gameplay-RNG variants used by pl01 missile / Master Spark particles.
+    if (id == 10030) return rng_float_pm1() * *reinterpret_cast<const float*>(raw + 0x4dc);
+    if (id == 10031) return rng_float01() * *reinterpret_cast<const float*>(raw + 0x4d8);
+    if (id == 10032) return rng_float_pm1() * *reinterpret_cast<const float*>(raw + 0x4d8);
     return *float_variable(vm, &value);
 }
 
