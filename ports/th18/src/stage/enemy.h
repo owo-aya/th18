@@ -94,8 +94,8 @@ struct Enemy {
     float hitbox[2]; // +0x1344
     uint8_t pad134c[4];
     uint32_t effect[16];  // +0x1350 表现对象句柄，每槽 4 字节
-    uint8_t pad1390[0x1450 - 0x1390];
-    float vec[4][4];  // +0x1450..+0x148f 初始值取自 .data 0x4b9560..0x4b956c
+    float animation_offset[16][3]; // +0x1390 ECL320
+    int32_t animation_parent[16]; // +0x1450 ECL322，原版初值 -1
     int32_t anm_index;  // +0x1490 当前 ECL 动画资源选择
     int32_t primary_anm_index; // +0x1494 槽 0 创建时的资源选择
     int32_t primary_anm_script; // +0x1498 槽 0 当前移动姿态组
@@ -123,7 +123,9 @@ struct Enemy {
     int32_t health; // +0x6220 当前生命
     int32_t health_max;  // +0x6224
     int32_t health_previous; // +0x6228
-    uint8_t pad622c[0x6238 - 0x622c];
+    int32_t health_scaled; // +0x622c 符卡累计扣血精度为普通 HP 的七倍
+    int32_t phase_health_threshold; // +0x6230 当前阶段下界
+    int32_t damage_accum; // +0x6234
     uint32_t flags6238;  // +0x6238 位1 由构造清除
     int32_t drop_kind; // +0x623c primary item
     uint8_t pad6240[0x6304 - 0x6240];

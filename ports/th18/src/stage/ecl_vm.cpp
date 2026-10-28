@@ -337,6 +337,7 @@ Enemy* create_enemy(const char* sub_name, const SpawnArgs& args) {
     if (manager->max_enemies <= manager->count) return nullptr;
 
     auto* enemy = new Enemy{};
+    for(auto& parent:enemy->animation_parent)parent=-1;
     for(auto& slot:enemy->bullets)slot.type=-1;
     auto* base = reinterpret_cast<uint8_t*>(enemy);
     enemy->self = enemy;
@@ -606,7 +607,27 @@ int32_t enemy_update_presentation(Enemy& e) {
     if(script_tree_run(e.thread,g_speed_scale)){enemy_defeat(e);return 1;}
     while(e.pending_sub){const char* sub=e.pending_sub;e.pending_sub=nullptr;enemy_restart(e,sub);}
     if((e.thread->sub_index<0 && e.thread->children.empty()) || (e.flag&0x2000000))return 1;
-    if(e.special_callback==4) {
+    if(e.special_callback==1) {
+        // 438d90: activate labeled bullets outside the boss circle, near the player.
+        const float player_radius=*reinterpret_cast<float*>(&e.var[4]);
+        const float boss_radius=*reinterpret_cast<float*>(&e.var[5]);
+        for(auto& b:g_enemy_bullets)if(b.label==1) {
+            if(!b.triggered) {
+                auto* boss=find_enemy(g_enemy_manager->boss_id[0]);
+                const float bx=b.x-boss->x,by=b.y-boss->y;
+                const float px=b.x-g_player->x,py=b.y-g_player->y;
+                if(bx*bx+by*by>=boss_radius*boss_radius && px*px+py*py<=player_radius*player_radius) {
+                    b.triggered=true;b.cursor=8;
+                }
+            } else if(b.cursor==11) {
+                const float dx=g_player->x-b.x,dy=g_player->y-b.y;
+                b.angle=bullet_turn_angle(dx==0 && dy==0?1.57079637f:std::atan2(dy,dx));
+                b.speed=0.01f;b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;
+            }
+        }
+    } else if(e.special_callback==2 || e.special_callback==3) {
+        laser::spawn_extra_border_enemies(e.special_callback);
+    } else if(e.special_callback==4) {
         // 439320: triggering bullets activate the waiting field's ET8 once.
         const float radius=*reinterpret_cast<float*>(&e.var[5]);
         for(const auto& trigger:g_enemy_bullets)if(trigger.label==1)
@@ -640,16 +661,16 @@ int32_t enemy_update_presentation(Enemy& e) {
         if(damage!=0) {
             card_passive_damage_event();
             if((spell_manager()->flags&0x21)==0x21)damage/=30;
-            *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x6234)+=damage;
+            e.damage_accum+=damage;
             if((e.flag&16)==0 && e.state6320<1) {
                 if((e.flags6238&1)==0)e.health-=damage;
                 else {
-                    auto* hp=reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x622c);
-                    hp[0]-=damage;e.health=(hp[0]-hp[1]*7)/7+hp[1];
+                    e.health_scaled-=damage;
+                    e.health=(e.health_scaled-e.phase_health_threshold*7)/7+e.phase_health_threshold;
                 }
             }
-            e.health_previous=e.health;
-            for(const auto& event:e.interrupts)if(event.health>=0){e.health_previous-=event.health;break;}
+            e.health_previous=e.health;e.phase_health_threshold=0;
+            for(const auto& event:e.interrupts)if(event.health>=0){e.health_previous-=event.health;e.phase_health_threshold=event.health;break;}
             if(!enemy_phase_change(e) && e.health<=0 && (e.flag&0x80)==0){enemy_defeat(e);return 1;}
             e.flag|=0x200000;
         }
@@ -676,8 +697,15 @@ int32_t enemy_update_presentation(Enemy& e) {
             sound_play_se_at(se,e.x);
         }
     }
-    for(AnmVm* vm:e.visual)if(vm) {
-        vm->extra_x=e.x;vm->extra_y=e.y;
+    for(int slot=0;slot<14;++slot)if(auto* vm=e.visual[slot]) {
+        vm->extra_x=e.x;vm->extra_y=e.y;vm->extra_z=e.z;
+        if(!(e.flag&0x4000000u)) {
+            vm->extra_x+=e.animation_offset[slot][0];vm->extra_y+=e.animation_offset[slot][1];vm->extra_z+=e.animation_offset[slot][2];
+            const int parent=e.animation_parent[slot];
+            if(parent>=0 && e.visual[parent]) {
+                vm->extra_x+=e.visual[parent]->pos_x;vm->extra_y+=e.visual[parent]->pos_y;vm->extra_z+=e.visual[parent]->pos_z;
+            }
+        }
         if(vm->flags3&0x200){auto* motion=reinterpret_cast<Motion*>(&e.x);vm->flags2|=4;vm->rot_z=std::atan2(motion->vel_y,motion->vel_x);}
     }
     if(e.fade_time>0)e.fade_time-=g_speed_scale;
@@ -946,7 +974,7 @@ static bool enemy_time_change(Enemy& e) {
                 g_enemy_manager->field44=0;
             } else if((spell->flags&9)==9) {
                 e.flag&=~0x1000000u;
-                *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0xac)+=e.field6828;
+                *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x90)+=e.field6828;
             }
             e.field6828=0;
             const char* sub=interrupt.time_sub;
@@ -961,7 +989,7 @@ static bool enemy_phase_change(Enemy& e) {
         if(interrupt.health<0)continue;
         if(e.health<=interrupt.health) {
             if(e.field6828!=0 && e.field6824==g_status.unk_008) {
-                *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0xac)+=e.field6828;
+                *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x90)+=e.field6828;
                 e.field6828=0;
             }
             e.health=interrupt.health;interrupt.health=-1;e.flag&=~0x1000000u;
@@ -1020,6 +1048,41 @@ static void bullet_extra_start(EnemyBullet& b) {
             break;
         }
         case 0x40:b.effect_flags|=0x40;b.bounce_count=0;break;
+        case 0x80000:
+            b.effect_flags|=x.type;
+            b.accel[bit][0]=std::cos(x.f[0])*x.f[1];b.accel[bit][1]=std::sin(x.f[0])*x.f[1];break;
+        case 0x40000000:b.effect_flags|=x.type;break;
+        case 0x8000000: {
+            // 4270xx..427530: the following ET holds the rest of the laser arguments.
+            if(x.i[0]!=0 && x.i[0]!=1)break;
+            const BulletExtra next=b.extras[b.cursor++];
+            float angle=x.f[0];
+            if(angle<=-999990)angle=b.angle;
+            else {
+                if(angle>=999990 && angle<1999990) {
+                    const float dx=g_player->x-b.x,dy=g_player->y-b.y;
+                    angle=dx==0 && dy==0?1.57079637f:std::atan2(dy,dx);
+                }
+                angle=bullet_turn_angle(angle);
+            }
+            const float speed=x.f[1]<=-999990?b.speed:x.f[1];
+            if(x.i[0]==0) {
+                laser::LineArgs a{};a.pos[0]=b.x;a.pos[1]=b.y;a.angle=angle;a.speed=speed;
+                a.start_length=x.f[2];a.max_length=x.f[3];a.end_travel=next.f[0];a.width=next.f[1];a.offset=next.f[2];
+                a.type=x.i[1];a.color=x.i[2];a.cursor=next.i[2];a.flags=1;
+                a.se=next.i[0];a.transform_se=next.i[1];std::memcpy(a.extras,b.extras,sizeof(a.extras));
+                laser::create_laser(0,&a);
+                if(x.i[3]!=0)bullet_cancel(b,0);
+            } else {
+                laser::InfiniteArgs a{};a.origin[0]=b.x;a.origin[1]=b.y;a.angle=angle;a.growth=speed;
+                a.start_length=x.f[2];a.max_length=x.f[3];a.max_width=next.f[0];a.axis_offset=next.f[1];
+                a.delay=next.i[0];a.expand=next.i[1];a.hold=next.i[2];a.shrink=next.i[3];
+                a.type=x.i[1];a.color=x.i[2];a.flags=(uint32_t(x.i[3])&0xfdu)|2u;a.cursor=(x.i[3]>>8)&255;
+                a.se=18;a.transform_se=-1;std::memcpy(a.extras,b.extras,sizeof(a.extras));laser::create_laser(1,&a);
+                if(x.i[3]&0x10000)bullet_cancel(b,0);
+            }
+            break;
+        }
         case 0x1000000: {
             // 425c60: ET spawns at the bullet, carrying the four integer and
             // four float parameters as the new enemy's ECL variables.
@@ -1088,8 +1151,10 @@ static void bullet_extra_start(EnemyBullet& b) {
 static void bullet_extra_update(EnemyBullet& b) {
     bool completed;
     do {
-        bullet_extra_start(b);completed=false;
-        for(int bit=0;bit<32;++bit) {
+        if(!(b.effect_flags&0x4000000u))bullet_extra_start(b);
+        completed=false;
+        // 423e10 order matters when acceleration, homing and drift run together.
+        for(int bit:{0,2,21,3,4,6,30,17,19,8,31,26}) {
             const uint32_t type=1u<<bit;if((b.effect_flags&type)==0)continue;
             const BulletExtra& x=b.effects[bit];float& time=b.timers[bit];bool end=false;
             switch(type) {
@@ -1122,6 +1187,22 @@ static void bullet_extra_update(EnemyBullet& b) {
             case 8:
                 if(time>=x.i[0])end=true;
                 else {b.speed+=x.f[0]*g_speed_scale;b.angle+=x.f[1]*g_speed_scale;b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;time+=g_speed_scale;}
+                break;
+            case 0x40000000: {
+                // 428460: ease velocity toward a player-relative direction, then derive polar motion.
+                if(int32_t(time)>=x.i[0]){end=true;break;}
+                const float dx=g_player->x-b.x,dy=g_player->y-b.y;
+                const float angle=bullet_turn_angle((dx==0 && dy==0?1.57079637f:std::atan2(dy,dx))+x.f[1]);
+                b.vx+=(std::cos(angle)*x.f[0]-b.vx)*x.f[2];
+                b.vy+=(std::sin(angle)*x.f[0]-b.vy)*x.f[2];
+                b.speed=std::sqrt(b.vx*b.vx+b.vy*b.vy);b.angle=bullet_turn_angle(std::atan2(b.vy,b.vx));
+                time+=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;break;
+            }
+            case 0x80000:
+                // 424349..424407 resets this timer each tick; its expiry mask is also literal.
+                if(int32_t(time)<x.i[0]) {
+                    b.x+=b.accel[bit][0]*g_speed_scale;b.y+=b.accel[bit][1]*g_speed_scale;time=0;
+                } else {b.effect_flags&=~9u;completed=true;}
                 break;
             case 0x80000000:case 0x4000000:
                 if(time>=x.i[0])end=true;else time+=g_speed_scale;
@@ -1167,7 +1248,10 @@ static void bullet_extra_update(EnemyBullet& b) {
                 end=b.bounce_count>=x.i[0];break;
             }
             }
-            if(end){b.effect_flags&=~type;completed=true;b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;}
+            if(end) {
+                b.effect_flags&=~type;completed=true;
+                if(type!=0x40000000u){b.vx=std::cos(b.angle)*b.speed;b.vy=std::sin(b.angle)*b.speed;}
+            }
         }
     } while(completed);
 }
@@ -1408,6 +1492,16 @@ static int32_t enemy_exec(void* host) {
         if(vm){vm->rot_z=arg_float(e,1);vm->flags2|=4;}
         break;
     }
+    case 317: {
+        if(auto* vm=e.visual[arg_int(e,0)])anm_set_label(vm,int16_t(arg_int(e,1)));
+        break;
+    }
+    case 320: {
+        const int slot=arg_int(e,0);
+        e.animation_offset[slot][0]=arg_float(e,1);e.animation_offset[slot][1]=arg_float(e,2);e.animation_offset[slot][2]=0;
+        break;
+    }
+    case 322:e.animation_parent[arg_int(e,0)]=arg_int(e,1);break;
     case 326:case 328: {
         const int slot=arg_int(e,0);auto* vm=e.visual[slot];
         if(vm==nullptr)break; // 436cf0 ignores an animation slot whose VM has ended.
@@ -1466,6 +1560,26 @@ static int32_t enemy_exec(void* host) {
         m.type_flags=(m.type_flags&~15u)|2;
         m.x=m.vel_x+std::cos(m.angle)*m.angle_add;m.y=m.vel_y+std::sin(m.angle)*m.angle_add;m.z=m.unk_03c;
         motion_combine(e);break;
+    }
+    case 409:case 411: {
+        // 430d40 group 0x1b: interpolate orbital speed and (radius, radius growth).
+        auto& m=op==409?e.absolute_motion:e.relative_motion;
+        const int s=op==409?0x1624:0x1684,r=op==409?0x16b4:0x16f8;
+        const float speed=arg_float(e,2),radius=arg_float(e,3),growth=arg_float(e,4);
+        const int duration=arg_int(e,0),mode=arg_int(e,1);
+        if(duration>0) {
+            const float from[2]={m.angle_add,m.angle_speed};
+            const float to[2]={radius<=-999999?m.angle_add:radius,growth<=-999999?m.angle_speed:growth};
+            motion_scalar(e,s,m.speed,speed<=-999999?m.speed:speed,duration,mode);
+            motion_pair(e,r,from,to,duration,mode);
+            m.type_flags=(m.type_flags&~13u)|2;
+            m.x=m.vel_x+std::cos(m.angle)*m.angle_add;m.y=m.vel_y+std::sin(m.angle)*m.angle_add;m.z=m.unk_03c;
+            motion_combine(e);
+        } else {
+            *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+s+0x28)=0;
+            *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+r+0x3c)=0;
+        }
+        break;
     }
     case 425:case 426: {
         auto& m=op==425?e.absolute_motion:e.relative_motion;
@@ -1580,7 +1694,7 @@ static int32_t enemy_exec(void* host) {
     case 510:e.drop_kind=arg_int(e,0);break;
     case 511:
         e.health=e.health_max=e.health_previous=arg_int(e,0);
-        *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x622c)=e.health*7;
+        e.health_scaled=e.health*7;
         if(e.flag&0x800000u)e.flag|=0x40000000u;
         break;
     case 513:e.phase_time=0;e.phase_fraction=0;break;
@@ -1644,12 +1758,13 @@ static int32_t enemy_exec(void* host) {
         std::string name(reinterpret_cast<const char*>(ins)+0x20,size);uint8_t key=0x77,step=7;
         for(char& c:name){c=char(uint8_t(c)^key);key+=step;step+=0x10;}
         int id=arg_int(e,0);if(op>=537)id+=g_difficulty-(op-537);
-        spell_start(id,name.c_str(),arg_int(e,1),arg_int(e,2));break;
+        spell_start(id,name.c_str(),arg_int(e,1),arg_int(e,2));
+        e.flags6238|=1;e.health_scaled=e.health*7;break;
     }
     case 523: {
         auto* spell=spell_manager();
         if((spell->flags&3)==3 && card_manager_owned(Kiseru))spawn_item(4,&e.x,-1.57079637f,2.2f,60);
-        spell_end();break;
+        spell_end();e.flags6238&=~1u;break;
     }
     case 521:e.interrupts[arg_int(e,0)].time_sub=reinterpret_cast<const char*>(ins)+24;break;
     case 524: {
@@ -1688,6 +1803,12 @@ static int32_t enemy_exec(void* host) {
         else if(e.field6828==1){e.field6828=arg_int(e,0);count+=e.field6828-1;}
         break;
     }
+    case 568:e.flags6238=(e.flags6238&~1u)|(uint32_t(arg_int(e,0))&1u);break;
+    case 570:
+        if(e.field6828!=0 && e.field6824==g_status.unk_008) {
+            *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x90)+=e.field6828;e.field6828=0;
+        }
+        break;
     case 574: {
         auto* raw=reinterpret_cast<uint8_t*>(&e);
         *reinterpret_cast<int32_t*>(raw+0x62e0)=arg_int(e,0);
@@ -1797,7 +1918,9 @@ static int32_t enemy_exec(void* host) {
     }
     case 630:stage_background_interrupt(arg_int(e,0));break;
     case 629:extra_aura_set(e,arg_float(e,0),uint32_t(arg_int(e,1)));break;
-    case 632:e.special_callback=arg_int(e,0);break;
+    case 632:
+        e.special_callback=arg_int(e,0);
+        *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(&e)+0x6818)=0;break;
     case 637: {
         const int effect=arg_int(e,0);
         if(effect==2 || effect==3)laser::spawn_extra_border_enemies(effect);

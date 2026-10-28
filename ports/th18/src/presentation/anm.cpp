@@ -1311,6 +1311,7 @@ void anm_copy_game_region(AnmVm* target)
 // sub_488be0：设置要等待的 label（脚本流里的 type 5 指令）。
 void anm_set_label(AnmVm* vm, int label)
 {
+    if(vm->callback_index==2)extra_charge_label(vm,label);
     vm->label = label;
     for(AnmVm* child=vm->child_head;child;child=child->sibling_next)anm_set_label(child,label);
 }
@@ -1319,6 +1320,7 @@ void anm_interrupt(AnmVm* vm, int label)
 {
     if (managed_vm(vm)) {
         // 488c60：根先立即执行，再依次对子VM设置同一label并立即执行。
+        if(vm->callback_index==2)extra_charge_label(vm,label);
         vm->label = label;
         update_vm_self(vm);
         for(AnmVm* child=vm->child_head;child;child=child->sibling_next)anm_interrupt(child,label);
@@ -1772,7 +1774,6 @@ void anm_execute_script(AnmVm* vm)
     // flags2 的 0x4000 位；没有精确入口时使用脚本中的 label -1。
     if (vm->label != 0)
     {
-        if(vm->callback_index==2)extra_charge_label(vm,vm->label);
         uint32_t offset = 0;
         int32_t destination = -1;
         int32_t fallback = -1;
