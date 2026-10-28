@@ -96,6 +96,13 @@ inline void put_f32(Player* p, int32_t offset, float value) {
     *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(p) + offset) = value;
 }
 
+// 488d50: replacement hides the old tree now, then A22 frees it in queue order.
+void mark_option_deleted(AnmVm* vm) {
+    if(vm->flags3&0x10000000u)return;
+    vm->flags3=(vm->flags3&~0x100u)|0x80u;
+    for(AnmVm* child=vm->child_head;child;child=child->sibling_next)mark_option_deleted(child);
+}
+
 void player_options_rebuild(Player* p) {
     const int power = g_status.power / g_status.power_step;
     const bool full = g_status.power == g_status.power_max;
@@ -112,7 +119,11 @@ void player_options_rebuild(Player* p) {
     };
     // 0045d5e0 refreshes full-power visuals on every explicit call.
     for (int i=0;i<4;++i) {
-        if (g_option_max_vm[i]) anm_vm_free(g_option_max_vm[i]);
+        if (g_option_max_vm[i]) {
+            if(full)mark_option_deleted(g_option_max_vm[i]);
+            else anm_set_label(g_option_max_vm[i],1);
+            anm_manage_vm(g_option_max_vm[i],nullptr);
+        }
         g_option_max_vm[i]=nullptr;
         if(full && i<power) {
             g_option_max_vm[i]=create(full_script[g_player_character],true);
@@ -122,7 +133,11 @@ void player_options_rebuild(Player* p) {
     // Only the ordinary options depend on a change in the power tier.
     if (power != g_option_power) {
         for (int i=0;i<4;++i) {
-            if (g_option_vm[i]) anm_vm_free(g_option_vm[i]);
+            if (g_option_vm[i]) {
+                if(i<power)mark_option_deleted(g_option_vm[i]);
+                else anm_set_label(g_option_vm[i],1);
+                anm_manage_vm(g_option_vm[i],nullptr);
+            }
             g_option_vm[i]=nullptr;
             const int q=0x670+i*0xf0;
             put_i32(p,q,i<power?2:0);
