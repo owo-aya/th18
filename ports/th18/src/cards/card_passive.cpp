@@ -29,6 +29,19 @@ std::list<PassiveVisual> g_visuals;
 int g_damage_events = 0;
 constexpr float kPi = 3.1415927410125732f;
 
+// 40a560 / 40da80 / 40cef0: previous, integer time, fractional time, reset, flags.
+void advance_passive_timer(int32_t* timer) {
+    timer[3]=0;
+    timer[0]=timer[1];
+    float& time=*reinterpret_cast<float*>(timer+2);
+    const float speed=stage::g_speed_scale;
+    if(speed>0.99f && speed<1.01f) {
+        ++timer[1];time+=1.0f;
+    } else {
+        time+=speed;timer[1]=static_cast<int32_t>(time);
+    }
+}
+
 float& player_float(int offset) {
     return *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(g_player) + offset);
 }
@@ -332,16 +345,13 @@ void card_passive_player_update(AbilityCard* card) {
                     vm->extra_x = x;
                     vm->extra_y = y;
                 }
-                timer[0] = timer[1]++;
-                reinterpret_cast<float*>(timer)[2] += 1.0f;
-                timer[3] = 0;
+                advance_passive_timer(timer);
             } else if (*handle != 0) {
                 anm_set_label(find_visual(*handle), 1);
                 *handle = 0;
             }
         }
-        card->unk_20 = card->unk_24++;
-        card->unk_28 += 1.0f;
+        advance_passive_timer(&card->unk_20);
         break;
     }
     case AutoBomb:
@@ -358,9 +368,7 @@ void card_passive_player_update(AbilityCard* card) {
                 bomb_set_card_active(false);
             }
         }
-        card->unk_20 = card->unk_24;
-        ++card->unk_24;
-        card->unk_28 += 1.0f;
+        advance_passive_timer(&card->unk_20);
         break;
     }
 }
