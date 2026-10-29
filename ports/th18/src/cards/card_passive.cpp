@@ -13,6 +13,7 @@
 #include "gameplay/spell.h"
 #include "player/player.h"
 #include "player/bomb.h"
+#include "projectiles/laser.h"
 #include "presentation/anm.h"
 #include "presentation/sound.h"
 #include "stage/session.h"
@@ -362,7 +363,9 @@ void card_passive_player_update(AbilityCard* card) {
             // timer. The original therefore keeps this cancel radius at 200.
             bullet->hit_radius = 200.0f;
             const auto* position = reinterpret_cast<const float*>(bullet->motion);
-            stage::cancel_enemy_bullets_circle(position[0], position[1], bullet->hit_radius, 0);
+            // 40a560 / 40da80: ordinary bullets first, then lasers with immunity respected.
+            stage::cancel_ordinary_bullets_circle(position[0], position[1], bullet->hit_radius, 0);
+            laser::cancel_circle(position[0], position[1], bullet->hit_radius, 0, 1);
             if (card->unk_24 >= 60) {
                 card->extra_54 = 0;
                 bomb_set_card_active(false);
