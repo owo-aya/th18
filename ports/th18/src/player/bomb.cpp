@@ -284,7 +284,6 @@ void update_sakuya() {
     if (!g_primary) { g_active = false; return; }
     if (g_enhanced && (g_timer == 50 || g_timer == 100 || g_timer == 150)) {
         sound_play_se(51);
-        if (g_secondary) anm_vm_free(g_secondary);
         create_vm(24, &g_player->x, &g_secondary);
         player_damage_circle(&g_player->x, 8, 10, 40, 7);
         player_damage_circle(g_pos, 640, 0, 20, 50);
@@ -361,6 +360,8 @@ void bomb_end_run() {
         if (orb.hitbox) orb.hitbox->flags &= ~1u;
         orb = {};
     }
+    // Player resources are cached here; release their detached effects at stage exit.
+    anm_delete_independent(40 + g_player_id);
     if (g_player_id == 2) stage::set_enemy_bullets_frozen(false);
     g_active = g_card_active = false;
 }
