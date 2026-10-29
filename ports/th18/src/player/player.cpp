@@ -888,25 +888,27 @@ int32_t player_bullet_hit_test(const float* pos, const float* size, float radius
                 if(a.handler_d==0x40c4f0)card_passive_shot_hit(&a);
                 else if(a.handler_d==2)damage=player_laser_hit(a,b,pos,size,radius,enemy_angle);
                 else {
-                    if(a.handler_d==1) {
-                        // 45f9d0 consumes 4cf280 before creation, then RGBA after
-                        // effect149's initial ANM tick, and finally calls 45f6f0.
+                    if(a.handler_d==1 || a.handler_d==5) {
+                        // 45f9d0 / 460f30: both consume 4cf280 and create effect149.
+                        // Only the needle reverses the angle and randomizes RGBA.
                         float angle=a.motion.angle+(float(rng_next(card_rng()))*4.6566129e-10f-1.0f)*0.349065840f;
-                        for(int turn=0;turn<2;++turn) {
+                        for(int turn=0;turn<(a.handler_d==1?2:1);++turn) {
                             while(angle>3.141592741f)angle-=6.283185482f;
                             while(angle< -3.141592741f)angle+=6.283185482f;
-                            if(turn==0)angle+=3.141592741f;
+                            if(a.handler_d==1 && turn==0)angle+=3.141592741f;
                         }
                         AnmResource* resource=anm_get(8,"effect.anm");
                         AnmVm* effect=anm_vm_alloc(resource);
                         anm_vm_bind_script(effect,resource,149);effect->flags3|=0x1000u;
                         effect->extra_x=a.motion.x;effect->extra_y=a.motion.y;effect->extra_z=a.motion.z;
                         effect->rot_z=angle;anm_vm_update(effect);anm_queue_add(effect);
-                        auto* rgba=reinterpret_cast<uint8_t*>(&effect->color);
-                        rgba[2]=uint8_t((rng_next(card_rng())&127)+127);
-                        rgba[1]=uint8_t((rng_next(card_rng())&63)+64);
-                        rgba[0]=uint8_t((rng_next(card_rng())&63)+64);
-                        rgba[3]=uint8_t((rng_next(card_rng())&63)+96);
+                        if(a.handler_d==1) {
+                            auto* rgba=reinterpret_cast<uint8_t*>(&effect->color);
+                            rgba[2]=uint8_t((rng_next(card_rng())&127)+127);
+                            rgba[1]=uint8_t((rng_next(card_rng())&63)+64);
+                            rgba[0]=uint8_t((rng_next(card_rng())&63)+64);
+                            rgba[3]=uint8_t((rng_next(card_rng())&63)+96);
+                        }
                         anm_manage_vm(effect,nullptr);
                     }
                     if(a.handler_d==3 || a.handler_d==4) {
