@@ -47,7 +47,12 @@ struct AttackObject {
     float life_i;            // +0x14 寿命整数（浮点保存）
     uint32_t flags_018;      // +0x18 bit0 初始化标记
     int32_t unk_01c;         // +0x1c
-    uint8_t unk_020[0x28];   // +0x20..+0x47
+    int32_t lock_previous;   // +0x20 蛇弹锁定计时上一帧
+    int32_t lock_timer;      // +0x24
+    float lock_time;         // +0x28 按游戏速度累计
+    int32_t lock_cached;     // +0x2c 原版计时缓存
+    uint32_t lock_flags;     // +0x30 bit0 = 计时器已初始化
+    uint8_t unk_034[0x14];   // +0x34..+0x47
     Motion motion;           // +0x48 运动学（坐标/角度/速度）
     int32_t active;          // +0x8c 1 = 槽占用（0 = 空）
     int32_t unk_090;         // +0x90

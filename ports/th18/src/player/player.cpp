@@ -1280,20 +1280,32 @@ void player_attack_update(Player* p) {
         } else if(a->handler_update==3 && a->active==1)a->motion.speed+=0.3f;
         else if(a->handler_update==4 && a->active==1) {
             if((a->flags&0x3c)==0) {
-                for(auto* node=stage::g_enemy_manager->enemy_head;node;node=node->next) {
-                    stage::Enemy& e=*node->self;
-                    if(e.flag&0xc000021)continue;
-                    if(std::fabs(e.y-a->motion.y)>16 || std::fabs(e.x-a->motion.x)<16)continue;
-                    a->flags=(a->flags&~0x38u)|4;anm_interrupt(a->anm_vm,2);a->motion.speed=0;a->unk_01c=0;
-                    auto* target=reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(a)+0xd4);target[0]=e.x;target[1]=e.y;target[2]=0;
-                    break;
+                if(!stage::g_enemy_manager)a->unk_090=0;
+                else if(a->unk_090==0) {
+                    for(auto* node=stage::g_enemy_manager->enemy_head;node;node=node->next) {
+                        stage::Enemy& e=*node->self;
+                        if(e.flag&0xc000021)continue;
+                        if(std::fabs(e.y-a->motion.y)>16 || std::fabs(e.x-a->motion.x)<16)continue;
+                        a->flags=(a->flags&~0x38u)|4;
+                        anm_set_label(a->anm_vm,2);
+                        // 460db0 -> 405d10: reset the native timer before this tick's advance.
+                        if(!(a->lock_flags&1)) {a->lock_cached=0;a->lock_flags|=1;}
+                        a->lock_previous=-1;a->lock_timer=0;a->lock_time=0;
+                        a->motion.speed=0;
+                        auto* target=reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(a)+0xd4);target[0]=e.x;target[1]=e.y;target[2]=e.z;
+                        break;
+                    }
                 }
             }
-            if((a->flags&0x3c)==4 && a->unk_01c++==4) {
-                const auto* target=reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(a)+0xd4);
-                // 460eee：只按目标的左右位置转为水平飞行。
-                a->motion.angle=a->motion.x>target[0]?-kPiF:0.0f;a->motion.speed=14;
-                a->flags=(a->flags&~0x34u)|8;
+            if((a->flags&0x3c)==4) {
+                if(a->lock_timer==4) {
+                    const auto* target=reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(a)+0xd4);
+                    // 460eee：只按目标的左右位置转为水平飞行。
+                    a->motion.angle=a->motion.x>target[0]?-kPiF:0.0f;a->motion.speed=14;
+                    a->flags=(a->flags&~0x34u)|8;
+                }
+                a->lock_cached=0;
+                player_timer_advance(&a->lock_previous,&a->lock_timer,&a->lock_time);
             }
         }
         if(a->handler_update==5 && a->active==1 && (a->motion.x < -192 || a->motion.x>192))
