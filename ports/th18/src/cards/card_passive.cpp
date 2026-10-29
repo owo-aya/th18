@@ -10,6 +10,7 @@
 #include "core/app.h"
 #include "core/game_session.h"
 #include "core/rng.h"
+#include "gameplay/pickups.h"
 #include "gameplay/spell.h"
 #include "player/player.h"
 #include "player/bomb.h"
@@ -154,8 +155,16 @@ bool immediate(AbilityCard* card) {
         if (live) { total_money() += 50; g_status.money += 50; }
         break;
     case Dango:
-        if (live && status_add_power(&g_status, 50)) sound_play_se_at(13, g_player->x);
-        break;
+        if (live) {
+            const bool changed = status_add_power(&g_status, 50);
+            card->flags_50 &= ~2u;
+            if (changed && g_player != nullptr) {
+                player_refresh_power_options();
+                stage::pickup_popup(&g_player->x, -1, 0xffffff40);
+                sound_play_se_at(13, g_player->x);
+            }
+        }
+        return true;
     default: return false;
     }
     if (live) card->flags_50 &= ~2u;
@@ -178,8 +187,16 @@ bool equip(AbilityCard* card) {
         break;
     case Narumi: if (live) status_add_life(&g_status); break;
     case PowerMax:
-        if (live && status_add_power(&g_status, 100)) sound_play_se_at(13, g_player->x);
-        break;
+        if (live) {
+            const bool changed = status_add_power(&g_status, 100);
+            card->flags_50 &= ~2u;
+            if (changed && g_player != nullptr) {
+                player_refresh_power_options();
+                stage::pickup_popup(&g_player->x, -1, 0xffffff40);
+                sound_play_se_at(13, g_player->x);
+            }
+        }
+        return false;
     }
     if (live) card->flags_50 &= ~2u;
     return false;

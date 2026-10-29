@@ -73,18 +73,6 @@ void add_score(uint32_t value) {
     session().score=std::min(session().score+value,999999999u);
     g_status.score=session().score;
 }
-// 4645f0: ten rotating score slots; digits are stored least significant first.
-void popup(const Pickup& item,int value,uint32_t color) {
-    if(popup_cursor>9)popup_cursor=0;
-    Popup& p=popups[popup_cursor++];
-    p.active=true;p.count=0;
-    if(value<0){p.digits[p.count++]=10;}
-    else {
-        do {p.digits[p.count++]=uint8_t(value%10);value/=10;}while(value!=0);
-    }
-    p.color=color;p.previous=-1;p.frame=0;p.time=0;
-    p.x=item.x;p.y=item.y;p.z=item.z;p.speed=1;
-}
 ThreadStatus update_popups(void*) {
     for(auto& p:popups)if(p.active) {
         p.y-=p.speed*g_speed_scale;p.speed*=0.949999988079071f;
@@ -166,19 +154,19 @@ void collect(Pickup& p) {
         uint32_t award=100;
         if(g_status.power<g_status.power_max) {
             if(status_add_power(&g_status,1)) {
-                player_refresh_power_options();popup(p,-1,0xffffff40);
+                player_refresh_power_options();pickup_popup(&p.x,-1,0xffffff40);
                 sound_play_se_at(13,p.x);
             }
         } else {
             uint32_t color;award=point_value(p,true,color);
-            popup(p,int(award),color);popup(p,int(award),0xffffffff);
+            pickup_popup(&p.x,int(award),color);pickup_popup(&p.x,int(award),0xffffffff);
         }
         add_score(award/10);break;
     }
     case 2: {
         refresh_point_value();
         uint32_t color;const uint32_t award=point_value(p,false,color);
-        popup(p,int(award),color);add_score(award/10);
+        pickup_popup(&p.x,int(award),color);add_score(award/10);
         ++*reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x44);
         ++*reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(&g_status)+0x54);
         ++g_status.money;break;
@@ -188,11 +176,11 @@ void collect(Pickup& p) {
         if(g_status.power<g_status.power_max) {
             if(status_add_power(&g_status,g_status.power_step)) {
                 player_refresh_power_options();sound_play_se_at(13,p.x);
-                popup(p,-1,0xffffff40);
+                pickup_popup(&p.x,-1,0xffffff40);
             }
         } else {
             // 4463c0 adds 2000 here and another 20000/10 in the common branch.
-            add_score(2000);award=20000;popup(p,20000,0xff808080);
+            add_score(2000);award=20000;pickup_popup(&p.x,20000,0xff808080);
             sound_play_se_at(13,p.x);
         }
         add_score(award/10);break;
@@ -207,7 +195,7 @@ void collect(Pickup& p) {
     case 7:status_add_bomb(&g_status);break;
     case 8:
         if(status_add_power(&g_status,g_status.power_max)) {
-            player_refresh_power_options();popup(p,-1,0xffffff40);sound_play_se_at(13,p.x);
+            player_refresh_power_options();pickup_popup(&p.x,-1,0xffffff40);sound_play_se_at(13,p.x);
         }
         break;
     case 9:case 10:case 11:case 12:case 13:case 14:add_score(g_status.money/10);break;
@@ -310,6 +298,19 @@ ThreadStatus draw(void*) {
 }
 } // namespace
 
+// 4645f0: ten rotating score slots; digits are stored least significant first.
+void pickup_popup(const float* position,int value,uint32_t color) {
+    if(popup_cursor>9)popup_cursor=0;
+    Popup& p=popups[popup_cursor++];
+    p.active=true;p.count=0;
+    if(value<0){p.digits[p.count++]=10;}
+    else {
+        do {p.digits[p.count++]=uint8_t(value%10);value/=10;}while(value!=0);
+    }
+    p.color=color;p.previous=-1;p.frame=0;p.time=0;
+    p.x=position[0];p.y=position[1];p.z=position[2];p.speed=1;
+}
+
 // 446f40: allocation order is observable (update order and cancel-point delay).
 void spawn_item(int32_t kind,const float* position,float angle,float speed,int32_t delay) {
     if(kind>19)return;
@@ -352,7 +353,8 @@ void pickups_create() {
         items[i]=Pickup{};
         const int pool=i<600?0:1;items[i].next=free_head[pool];free_head[pool]=i;
     }
-    popups={};popup_cursor=0;
+    // Original 442e53 creates popups before card slot13/slot0 at 442f98/442fb7.
+    // Our card callbacks run earlier; keep their entries until drawing starts.
     bullets=anm_get(7,"bullet.anm");cards=anm_get(31,"abcard.anm");ascii=anm_get(2,"ascii.anm");
     anm_vm_reset(&popup_font);popup_font.anm_index=popup_font.anm_table_index=2;
     anm_set_sprite(&popup_font,ascii,289);popup_font.flags3=(popup_font.flags3&~0x1100000u)|0xe00000u;
@@ -363,6 +365,7 @@ void pickups_create() {
 }
 void pickups_destroy() {
     thread_remove(logic);thread_remove(drawing);thread_remove(popup_logic);thread_remove(popup_drawing);
+    popups={};popup_cursor=0;
     for(auto& p:items){anm_vm_free(p.card);p.card=nullptr;p.state=0;}
     for(auto* vm:flashes)anm_vm_free(vm);
     flashes.clear();

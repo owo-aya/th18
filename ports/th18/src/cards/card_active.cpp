@@ -6,6 +6,7 @@
 
 #include "cards/card_manager.h"
 #include "core/input.h"
+#include "gameplay/pickups.h"
 #include "gameplay/spell.h"
 #include "player/bomb.h"
 #include "player/player.h"
@@ -120,14 +121,6 @@ void sun_invulnerability() {
     g_player->invuln_value = 2.0f;
 }
 
-void add_bomb_fragment() {
-    if (g_status.unk_07c >= g_status.unk_088) { g_status.unk_080 = 0; return; }
-    if (++g_status.unk_080 > 2) {
-        g_status.unk_080 = 0;
-        ++g_status.unk_07c;
-        sound_play_se(46);
-    }
-}
 } // namespace
 
 void card_active_activate(AbilityCard* card) {
@@ -219,9 +212,15 @@ void card_active_activate(AbilityCard* card) {
     case Riceball:
         if (card->count > 0) break;
         if (g_status.power < g_status.power_max) {
-            if (status_add_power(&g_status, 100)) player_refresh_power_options();
-            sound_play_se(13);
-        } else add_bomb_fragment();
+            if (status_add_power(&g_status, 100)) {
+                player_refresh_power_options();
+                stage::pickup_popup(&g_player->x, -1, 0xffffff40);
+                sound_play_se_at(13, g_player->x);
+            }
+        } else {
+            status_add_bomb_fragment(&g_status);
+            sound_play_se_at(13, g_player->x);
+        }
         start_cooldown(card);
         create_visual(card, 66, &g_player->x);
         break;
