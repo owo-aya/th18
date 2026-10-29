@@ -15,6 +15,7 @@ void hud_boss_segment(int boss,int index,float ratio,uint32_t color);
 void hud_boss_spells(int count);
 void hud_update();
 void hud_update_cards(); // 408640：卡效果更新后的冷却/发动显示
+void hud_render_cards(); // 408ab0：B0x33 卡牌专用状态文字
 void hud_render();
 void hud_destroy();
 }

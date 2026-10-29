@@ -5,4 +5,5 @@
 int platform_run(HINSTANCE hinst);
 float platform_frame_fps();
 int platform_display_mode();
+float platform_display_scale();
 void platform_set_display_mode(int mode);

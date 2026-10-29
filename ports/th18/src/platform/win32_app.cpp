@@ -31,6 +31,7 @@ static float g_display_scale=1.0f;
 static RECT g_window_rect;
 
 int platform_display_mode() {return g_display_mode;}
+float platform_display_scale() {return g_display_scale;}
 
 void platform_set_display_mode(int mode) {
     // 4734e0: client size and D3D backbuffer size are separate, especially in DBD.

@@ -6,9 +6,11 @@
 #include <algorithm>
 
 #include "cards/card_manager.h"
+#include "cards/card_passive.h"
 #include "cards/card_profile.h"
 #include "core/game_session.h"
 #include "player/player.h"
+#include "platform/win32_app.h"
 #include "presentation/anm.h"
 #include "presentation/text.h"
 #include "presentation/sound.h"
@@ -49,6 +51,15 @@ AnmVm* create(AnmResource* resource, int script, bool second_queue) {
     anm_vm_update(vm);
     anm_queue_add(vm);
     return vm;
+}
+
+void clear_card_icons() {
+    for (int i = 0; i < g_card_count; ++i) {
+        if (g_card_objects[i]->id == Mukade) g_card_objects[i]->extra_58 = 0;
+        anm_vm_free(g_cards[i]);
+        g_card_objects[i] = nullptr;
+    }
+    g_card_count = 0;
 }
 
 void set_gauge(AnmVm** cells, int value, int fragments, int maximum) {
@@ -183,9 +194,9 @@ void update_boss_hud() {
             }
         }
         const float dx=boss->x-g_player->x,dy=boss->y-g_player->y;
-        int32_t& near=*reinterpret_cast<int32_t*>(block+0x50);
-        if((!near && dx*dx+dy*dy<6400) || (near && dx*dx+dy*dy>=9216)) {
-            near=!near;for(auto* vm:g_boss_rings[slot])anm_set_label(vm,near?3:2);
+        int32_t& player_near=*reinterpret_cast<int32_t*>(block+0x50);
+        if((!player_near && dx*dx+dy*dy<6400) || (player_near && dx*dx+dy*dy>=9216)) {
+            player_near=!player_near;for(auto* vm:g_boss_rings[slot])anm_set_label(vm,player_near?3:2);
         }
     }
     for(int n=0;n<10;++n) {
@@ -313,13 +324,12 @@ void hud_create(int difficulty, int player) {
 void hud_clear_cards() {
     anm_vm_free(g_active);
     g_active = nullptr;
-    for (int i = 0; i < g_card_count; ++i) anm_vm_free(g_cards[i]);
-    g_card_count = 0;
+    clear_card_icons();
 }
 
 void hud_refresh_cards(bool animate) {
     if (g_frame == nullptr) return; // 初装/回放恢复早于本关HUD创建。
-    for (int i = 0; i < g_card_count; ++i) anm_vm_free(g_cards[i]);
+    clear_card_icons();
     AnmResource* cards = anm_get(0x1f, "abcard.anm");
     const CardManager* manager = card_manager();
     const int category_count[] = {manager->count_kind8, manager->count_kind40, manager->count_other};
@@ -348,6 +358,42 @@ void hud_refresh_cards(bool animate) {
             if (card->id == Mukade) card->extra_58 = static_cast<int32_t>(g_cards[i]->handle); // 00411090
             if (!animate) anm_set_label(g_cards[i], 4);
         }
+    }
+}
+
+void hud_render_cards() {
+    // 408ab0 / slot18 (4110a0), at B0x33 after the ordinary HUD text.
+    for (int i = 0; i < g_card_count; ++i) {
+        AbilityCard* card = g_card_objects[i];
+        if (card->id != Mukade) continue;
+        AnmVm* icon = g_cards[i];
+        if (icon == nullptr) {
+            card->extra_58 = 0;
+            continue;
+        }
+        float position[3];
+        anm_vm_scene_position(icon, position);
+        // 4110a0: (native screen position + (-32,+32)) / screen scale.
+        // Our scene position is already divided by that scale; the text
+        // queue consumes the result doubled for the port's 1280 canvas.
+        const float offset = 64.0f / platform_display_scale();
+        const TextPos pos{position[0] * 2.0f - offset, position[1] * 2.0f + offset, 0.0f};
+        const uint32_t alpha = anm_find_child(icon, 6)->color & 0xff000000u;
+        card->extra_54 = card_passive_value(card); // live DAT_004cf2d4, not the last shot's cache.
+        const float multiplier = std::min(1.8f, 1.0f + card->extra_54 / 20000.0f);
+        auto* raw = reinterpret_cast<uint8_t*>(text_manager());
+        char value[32];
+        std::sprintf(value, "%.3f", static_cast<double>(multiplier));
+        text_set_color(alpha | 0x00ffa000u);
+        text_queue_add(text_manager(), &pos, value);
+        const int count = *reinterpret_cast<int32_t*>(raw + 0x19224);
+        TextItem& item = reinterpret_cast<TextItem*>(raw + 0xc24)[count - 1];
+        item.style = 1; // 41a110 overrides the last item, not the global style.
+        // ascii.anm's style-1 glyphs are 8x8 at 640. Convert this item's
+        // geometry to the 1280 canvas without changing manager text sizes.
+        item.dirty_110 *= 2.0f;
+        item.dirty_114 *= 2.0f;
+        text_set_color(0xffffffffu);
     }
 }
 

@@ -361,6 +361,7 @@ void text_render(TextManager* text, uint32_t group) {
         // 419390/41a2b0: style 0 uses native 640-space scale, a 14px
         // glyph and a separate 9px advance. Positions are already doubled.
         const bool ascii = item->style == 0;
+        const bool small_ascii = item->style == 1;
         if (ascii) {
             scale_x *= 2.0f;
             scale_y *= 2.0f;
@@ -373,8 +374,9 @@ void text_render(TextManager* text, uint32_t group) {
             anm_set_sprite(vm, res, glyph_sprite(item->style, static_cast<uint8_t>(*p)));
             // 41a2b0 subtracts 12/4 for alignment, then advances by +12/+4.
             // The comma's -4 alignment delta is not a negative glyph width.
+            // Style 1 advances by 6 * item scale; its sprite remains 8px wide.
             width += numeric ? (*p == ',' ? 4.0f : 12.0f) * scale_x
-                             : (ascii ? 9.0f : vm->sprite_w) * scale_x;
+                             : (ascii ? 9.0f : (small_ascii ? 6.0f : vm->sprite_w)) * scale_x;
             height = (numeric ? 16.0f : vm->sprite_h) * scale_y;
         }
         if (item->dirty_130 == 0) x -= width * 0.5f;
@@ -426,7 +428,7 @@ void text_render(TextManager* text, uint32_t group) {
             }
             anm_draw_vm(vm);
             numeric_advance = (c == ',' ? 4.0f : 12.0f) * scale_x;
-            x += numeric ? numeric_advance : (ascii ? 9.0f : vm->sprite_w) * scale_x;
+            x += numeric ? numeric_advance : (ascii ? 9.0f : (small_ascii ? 6.0f : vm->sprite_w)) * scale_x;
         }
     }
 }

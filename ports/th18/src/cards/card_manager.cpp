@@ -100,6 +100,11 @@ ThreadStatus update(void*) {
     g_cards.visual_frame=unit?g_cards.visual_frame+1:int(g_cards.visual_time);
     return THREAD_CONTINUE;
 }
+
+ThreadStatus render(void*) {
+    stage::hud_render_cards();
+    return THREAD_CONTINUE;
+}
 } // namespace
 
 void card_manager_begin_run(const int32_t* ids, int count, uint32_t flags) {
@@ -122,11 +127,18 @@ void card_manager_begin_run(const int32_t* ids, int count, uint32_t flags) {
     g_task->flags |= 2; // 原407f10：局内Card任务受ThreadManager特殊/暂停态控制。
     thread_set_priority(g_task, 0x16);
     thread_enqueue_logic(g_task);
+    Thread* render_task = thread_create(render);
+    render_task->flags |= 2; // 4082b0: the card draw task has the special/pause flag.
+    thread_set_priority(render_task, 0x33);
+    thread_enqueue_render(render_task);
+    g_cards.thread_b = render_task;
 }
 
 void card_manager_end_run() {
     thread_remove(g_task);
     g_task = nullptr;
+    thread_remove(static_cast<Thread*>(g_cards.thread_b));
+    g_cards.thread_b = nullptr;
     card_manager_clear_cards();
     anm_delete_independent(0x1e);
     std::memset(&g_cards, 0, sizeof(g_cards));

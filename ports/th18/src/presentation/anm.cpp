@@ -1160,6 +1160,11 @@ void anm_draw_vm(AnmVm* vm)
     manager->draw_count++;
 }
 
+void anm_vm_scene_position(const AnmVm* vm, float position[3])
+{
+    scene_position(vm, position);
+}
+
 void anm_vm_corners(AnmVm* vm, float corners[4][2])
 {
     const uint32_t coordinate_mode = (vm->flags3 >> 22) & 7;

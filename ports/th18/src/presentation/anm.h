@@ -269,6 +269,8 @@ void anm_draw_vm(AnmVm* vm);
 void anm_apply_blend(AnmVm* vm);
 // sub_481d20：攻击精灵四角，按绘制变换换算到640×480画面坐标。
 void anm_vm_corners(AnmVm* vm, float corners[4][2]);
+// sub_4065a0：脚本位置、调用者位置、附加偏移与根变换合成到640x480场景坐标。
+void anm_vm_scene_position(const AnmVm* vm, float position[3]);
 
 // sub_478580: VM 复位。
 void anm_vm_reset(AnmVm* vm);
