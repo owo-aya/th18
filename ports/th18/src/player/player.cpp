@@ -49,7 +49,8 @@ int32_t g_player_shot_type = 0;       // DAT_004cccf8  与角色相加选 SHT �
 GameStatusBlock g_status = {};        // 0x4cccdc
 
 namespace {
-int32_t player_bullet_alloc(const float* pos,float angle,int32_t life,int32_t damage);
+int32_t player_bullet_alloc(const float* pos,float angle,int32_t life,int32_t damage,
+                           float shape_a,float shape_b,bool circular);
 
 const char* const kPlayerShtNames[4] = {"pl00.sht", "pl01.sht", "pl02.sht", "pl03.sht"};
 
@@ -914,9 +915,8 @@ int32_t player_bullet_hit_test(const float* pos, const float* size, float radius
                     if(a.handler_d==3 || a.handler_d==4) {
                         const auto* sht=static_cast<const PlayerSht*>(p->sht);
                         const auto* instruction=reinterpret_cast<const ShtInstruction*>(sht->sub_offset[a.command>>8])+(a.command&255);
-                        const int index=player_bullet_alloc(&a.motion.x,0,a.handler_d==3?10:20,instruction->damage);
-                        PlayerBullet& splash=bullets[index-1];splash.flags=3;splash.hit_radius=24;
-                        splash.unk_008=a.handler_d==3?1:*reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(instruction)+0x4c);
+                        const float growth=a.handler_d==3?1:*reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(instruction)+0x4c);
+                        PlayerBullet& splash=*player_damage_circle(&a.motion.x,24,growth,a.handler_d==3?10:20,instruction->damage);
                         splash.hit_interval=4;
                         if(a.handler_d==3){auto* motion=reinterpret_cast<Motion*>(splash.motion);motion->speed=0.3f;motion->angle=-1.57079637f;}
                         anm_set_label(a.anm_vm,1);
@@ -975,33 +975,47 @@ int32_t& player_bullet_cursor(Player* p) {
     return *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(p) + 0x20570);
 }
 
-// 0x45DFA0 的池分配部分：返回 1 起的槽序号。
-int32_t player_bullet_alloc(const float* pos, float angle, int32_t life, int32_t damage) {
+// 45de40 (circle) / 45dfa0 (rectangle): a full scan returns the last slot untouched.
+int32_t player_bullet_alloc(const float* pos, float angle, int32_t life, int32_t damage,
+                           float shape_a, float shape_b, bool circular) {
     Player* p = g_player;
     PlayerBullet* pool = player_bullet_pool(p);
-    int32_t index = 0;
-    int32_t cursor = player_bullet_cursor(p);
+    int32_t index = player_bullet_cursor(p);
     for (int32_t attempt = 0; attempt < kPlayerBulletCapacity; ++attempt) {
-        const int32_t next = (cursor + 1 < kPlayerBulletCapacity) ? cursor + 1 : 0;
-        if ((pool[next].flags & 1u) == 0) {
-            index = next;
-            break;
+        index = (index + 1 < kPlayerBulletCapacity) ? index + 1 : 0;
+        if ((pool[index].flags & 1u) == 0) break;
+        if (attempt == kPlayerBulletCapacity - 1) {
+            player_bullet_cursor(p) = index;
+            return index + 1;
         }
-        cursor = next;
     }
     PlayerBullet* b = &pool[index];
-    b->flags = 1u;
-    b->hit_radius=0;b->unk_008=0;
     std::memset(b->motion, 0, sizeof(b->motion));
     std::memcpy(b->motion, pos, 3 * sizeof(float));
-    while (angle > kPiF) {
-        angle -= kTwoPiF;
+    if (circular) {
+        b->flags = (b->flags & ~4u) | 3u;
+        b->hit_radius = shape_a;
+        b->unk_008 = shape_b;
+    } else {
+        b->flags = (b->flags & ~6u) | 1u;
+        b->half_width = shape_a;
+        b->half_height = shape_b;
+        int wraps = 0;
+        while (angle > kPiF) {
+            angle -= kTwoPiF;
+            if (wraps++ >= 0x21) break;
+        }
+        while (angle < -kPiF) {
+            angle += kTwoPiF;
+            if (wraps++ >= 0x21) break;
+        }
+        b->angle = angle;
+        b->unk_010 = 0.0f;
     }
-    while (angle < -kPiF) {
-        angle += kTwoPiF;
+    if (!(b->flags_070 & 1u)) {
+        b->unk_06c = 0;
+        b->flags_070 |= 1u;
     }
-    b->angle = angle;
-    b->unk_010 = 0.0f;
     b->life = life;
     b->life_prev = life - 1;
     b->life_f = static_cast<float>(life);
@@ -1012,7 +1026,6 @@ int32_t player_bullet_alloc(const float* pos, float angle, int32_t life, int32_t
     b->last_hit_enemy = 0;
     b->hit_cooldown = 0;
     b->hit_type = 0;
-    b->attack_id = 0;
     b->kind = 0;
     player_bullet_cursor(p) = index;
     return index + 1;
@@ -1064,17 +1077,13 @@ void player_fire_instruction(Player* p, const PlayerSht* sht, int32_t script, ui
 } // namespace
 
 PlayerBullet* player_damage_circle(const float*pos,float radius,float radius_per_frame,int life,int damage) {
-    const int index=player_bullet_alloc(pos,0,life,damage);
-    PlayerBullet* b=player_bullet_pool(g_player)+index-1;
-    b->flags=3;b->hit_radius=radius;b->unk_008=radius_per_frame;
-    return b;
+    const int index=player_bullet_alloc(pos,0,life,damage,radius,radius_per_frame,true);
+    return player_bullet_pool(g_player)+index-1;
 }
 
 PlayerBullet* player_damage_rectangle(const float*pos,float angle,float width,float height,int life,int damage) {
-    const int index=player_bullet_alloc(pos,angle,life,damage);
-    PlayerBullet* b=player_bullet_pool(g_player)+index-1;
-    b->half_width=width;b->half_height=height;
-    return b;
+    const int index=player_bullet_alloc(pos,angle,life,damage,width,height,false);
+    return player_bullet_pool(g_player)+index-1;
 }
 
 void player_motion_init(Motion* m) {
@@ -1184,13 +1193,12 @@ int32_t player_attack_spawn(Player* p, const ShtInstruction* instr, int32_t comm
     card_manager_on_shot(a);
     // 行 277–280：卡牌 vtable+0x28 的发射回调（卡管理器实例接入后补）。
     // 行 290–301：分配子弹并回填攻击对象字段。
-    a->bullet_index = player_bullet_alloc(&a->motion.x, a->motion.angle, 9999999, a->damage);
+    a->bullet_index = player_bullet_alloc(&a->motion.x, a->motion.angle, 9999999, a->damage,
+                                        a->half_width, a->half_height, false);
     PlayerBullet* b = player_bullet_pool(p) + (a->bullet_index - 1);
     b->kind = 1;
     b->damage_max = 10000000;
     b->attack_id = a->id;
-    b->half_width = a->half_width;
-    b->half_height = a->half_height;
     if(instr->handler_a==2) {
         a->half_width=0;b->half_width=0;a->flags&=~1u;
         sound_play_se_at(20,p->x);
