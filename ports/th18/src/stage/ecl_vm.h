@@ -76,29 +76,32 @@ enum RankMask : uint8_t {
     kRankLunatic = 8,
 };
 
-// ECL 变量 id（var_get_int / var_get_ptr）。负数 id 是内建状态，其余是敌机自身字段或
-// 变量 A..H（-9957.. 等）。只列出已确认的；完整映射见 0x00437360 的 switch。
+// ECL special variables (437360/437c90); writability is separately defined
+// by 437b20/4387e0. Nonnegative operands address the current script stack frame.
 enum EclVar : int32_t {
     kVarRandInt = -10000,       // 随机 int（0x00402740 结果 & 0x7fffffff）
-    kVarRandFloat = -10001,     // 随机 [0,1)
+    kVarRandFloat = -9999,      // 随机 [0,1)
     kVarRandFloatPM = -9987,    // 随机 [-1,1)
-    kVarX = -9985,              // enemy+0x1270
-    kVarY = -9984,              // enemy+0x1274
-    kVarSpeed = -9983,          // enemy+0x12b4
-    kVarAngle = -9982,          // enemy+0x12b8
-    kVarPlayerX = -9981,        // player+0x620
-    kVarPlayerY = -9980,        // player+0x624
-    kVarPlayerDistance = -9960, // sqrt((x-px)^2+(y-py)^2)
+    kVarX = -9997,              // enemy+0x1270
+    kVarY = -9996,              // enemy+0x1274
+    kVarSpeed = -9969,          // enemy+0x12cc
+    kVarAngle = -9971,          // enemy+0x12d0
+    kVarPlayerX = -9991,        // player+0x620
+    kVarPlayerY = -9990,        // player+0x624
+    kVarPlayerDistance = -9944, // sqrt((x-px)^2+(y-py)^2)
     kVarRankEasy = -9953,       // difficulty == 0
     kVarRankNormal = -9952,     // difficulty == 1
     kVarRankHard = -9951,       // difficulty == 2
     kVarRankLunatic = -9950,    // difficulty == 3
-    kVarDiff = -9943,           // GameState+0x24 难度原值
-    kVarBossHp = -9965,         // manager+0x3c
-    kVarBossHp2 = -9964,        // manager+0x40
-    kVarBossHp3 = -9963,        // manager+0x44
-    kVarEnemyCount = -9946,     // GameState+0x1b0 计数
-    kVarId = -9922,             // enemy+0x14b8（变量 A）
+    kVarDiff = -9959,           // DAT_004ccd00
+    kVarHealth = -9954,         // enemy+0x6220
+    kVarPhaseMisses = -9949,    // manager+0x3c
+    kVarPhaseBombs = -9948,     // manager+0x40
+    kVarPhaseNoBomb = -9947,    // manager+0x44
+    kVarEnemyCount = -9946,     // manager+0x198
+    kVarLastId = -9931,         // manager+0x94
+    kVarId = -9914,             // enemy+0x6830
+    kVarParentId = -9909,       // enemy+0x6834
     // …其余 id 见 GetVarInt 原版 switch。
 };
 

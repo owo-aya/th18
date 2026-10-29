@@ -39,11 +39,7 @@ namespace laser { void clear_lasers(int32_t arg); }  // 定义在文件末尾（
 #include "core/app.h"
 #include "presentation/ingame_menu.h"
 
-// ECL 敌机 VM 与三条最小真实实现（P0 编译门禁用）：
-//   stage::thread_current  0x0048dbe0
-//   stage::op_create_enemy 0x004369e0
-//   laser::clear_lasers    0x00449090
-// 其余入口（vm_exec 各 case、碰撞、Boss）按 P1 继续补。
+// Enemy ECL host (430d30) and script threads (48b3a0).
 
 namespace stage {
 
@@ -369,8 +365,8 @@ Enemy* create_enemy(const char* sub_name, const SpawnArgs& args) {
     enemy->thread->ecl_res = manager->ecl_resource;
     enemy->id = manager->next_id;
     manager->last_id = enemy->id;
-    manager->next_id = enemy->id + 1;
-    if (manager->next_id == 0) manager->next_id = 2;
+    manager->next_id = int32_t(uint32_t(enemy->id) + 1u);
+    if (manager->next_id == 0) manager->next_id = 1;
 
     enemy->hurtbox[0]=enemy->hurtbox[1]=24.0f;
     enemy->hitbox[0]=enemy->hitbox[1]=24.0f;
@@ -1476,12 +1472,22 @@ static int32_t enemy_var_int(void* host, int32_t id) {
     switch (id) {
         case -10000: return static_cast<int32_t>(rng_next() & 0x7fffffffu);
         case -9999: return static_cast<int32_t>(rng_float01());
-        case -9997: return static_cast<int32_t>(e.x);
-        case -9996: return static_cast<int32_t>(e.y);
-        case -9995: return static_cast<int32_t>(*reinterpret_cast<const float*>(base + 0x12b4));
-        case -9994: return static_cast<int32_t>(*reinterpret_cast<const float*>(base + 0x12b8));
-        case -9993: return static_cast<int32_t>(*reinterpret_cast<const float*>(base + 0x12f8));
-        case -9992: return static_cast<int32_t>(*reinterpret_cast<const float*>(base + 0x12fc));
+        case -9997:case -9977:return int32_t(e.x);
+        case -9996:case -9976:return int32_t(e.y);
+        case -9995:case -9975:return int32_t(e.absolute_motion.x);
+        case -9994:case -9974:return int32_t(e.absolute_motion.y);
+        case -9993:case -9973:return int32_t(e.relative_motion.x);
+        case -9992:case -9972:return int32_t(e.relative_motion.y);
+        case -9991:case -9965:return int32_t(g_player->x);
+        case -9990:case -9964:return int32_t(g_player->y);
+        case -9971:return int32_t(e.absolute_motion.angle);
+        case -9970:return int32_t(e.relative_motion.angle);
+        case -9969:return int32_t(e.absolute_motion.speed);
+        case -9968:return int32_t(e.relative_motion.speed);
+        case -9967:return int32_t(e.absolute_motion.angle_add);
+        case -9966:return int32_t(e.relative_motion.angle_add);
+        case -9963:return int32_t(find_enemy(g_enemy_manager->boss_id[0])->x);
+        case -9962:return int32_t(find_enemy(g_enemy_manager->boss_id[0])->y);
         case -9988: return e.phase_time;
         case -9987: return static_cast<int32_t>(rng_float_pm1());
         case -9986: return (e.flag>>24)&1;
@@ -1497,6 +1503,17 @@ static int32_t enemy_var_int(void* host, int32_t id) {
         case -9947:return g_enemy_manager->field44;
         case -9946:return g_enemy_manager->count;
         case -9945:return g_player_character+g_player_shot_type;
+        case -9944:return int32_t(std::hypot(e.x-g_player->x,e.y-g_player->y));
+        case -9931:return g_enemy_manager->last_id;
+        case -9914:return e.id;
+        case -9911:case -9910: {
+            Enemy* boss=find_enemy(g_enemy_manager->boss_id[0]);
+            if(!boss)return 0;
+            return id==-9910?int32_t(boss->absolute_motion.speed):
+                int32_t(std::atan2(reinterpret_cast<const Motion*>(&boss->x)->vel_y,
+                                  reinterpret_cast<const Motion*>(&boss->x)->vel_x));
+        }
+        case -9909:return e.parent_id;
         default:
             if(id>=-9985 && id<=-9978){const int i=id+9985;return i<4?e.var[i]:int32_t(*reinterpret_cast<float*>(&e.var[i]));}
             if(id>=-9926 && id<=-9923)return reinterpret_cast<int32_t*>(g_enemy_manager)[3+id+9926];
@@ -1518,6 +1535,13 @@ static float enemy_var_float(void* host,int32_t id) {
     case -9991:case -9965:return g_player->x;case -9990:case -9964:return g_player->y;
     case -9989:return std::atan2(g_player->y-e.y,g_player->x-e.x);
     case -9987:return rng_float_pm1();case -9959:return float(g_difficulty);case -9954:return float(e.health);
+    case -9988:return e.phase_fraction;
+    case -9971:return e.absolute_motion.angle;
+    case -9970:return e.relative_motion.angle;
+    case -9969:return e.absolute_motion.speed;
+    case -9968:return e.relative_motion.speed;
+    case -9967:return e.absolute_motion.angle_add;
+    case -9966:return e.relative_motion.angle_add;
     case -9975:case -9995:return *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(&e)+0x12b4);
     case -9974:case -9994:return *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(&e)+0x12b8);
     case -9973:case -9993:return *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(&e)+0x12f8);
@@ -1525,6 +1549,18 @@ static float enemy_var_float(void* host,int32_t id) {
     case -9963:case -9962:{Enemy* boss=find_enemy(g_enemy_manager->boss_id[0]);return boss?(id==-9963?boss->x:boss->y):(id==-9963?0.0f:128.0f);}
     case -9944:return std::hypot(e.x-g_player->x,e.y-g_player->y);
     case -9958:return std::atan2(reinterpret_cast<const Motion*>(&e.x)->vel_y,reinterpret_cast<const Motion*>(&e.x)->vel_x);
+    case -9956:return std::atan2(g_player->y-e.absolute_motion.y,g_player->x-e.absolute_motion.x);
+    case -9955:return std::atan2(g_player->y-e.relative_motion.y,g_player->x-e.relative_motion.x);
+    case -9931:return float(uint32_t(g_enemy_manager->last_id));
+    case -9914:return float(uint32_t(e.id));
+    case -9911:case -9910: {
+        Enemy* boss=find_enemy(g_enemy_manager->boss_id[0]);
+        if(!boss)return 0.0f;
+        return id==-9910?boss->absolute_motion.speed:
+            std::atan2(reinterpret_cast<const Motion*>(&boss->x)->vel_y,
+                       reinterpret_cast<const Motion*>(&boss->x)->vel_x);
+    }
+    case -9909:return float(uint32_t(e.parent_id));
     default:
         if(id>=-9985 && id<=-9978){int i=id+9985;return i<4?float(e.var[i]):*reinterpret_cast<float*>(&e.var[i]);}
         if(id>=-9922 && id<=-9915)return reinterpret_cast<float*>(g_enemy_manager)[7+id+9922];
@@ -1536,20 +1572,11 @@ static float enemy_var_float(void* host,int32_t id) {
 
 static int32_t* enemy_var_ptr(void* host, int32_t id) {
     Enemy& e = *static_cast<Enemy*>(host);
-    auto* base = reinterpret_cast<uint8_t*>(&e);
     switch (id) {
-        case -9997: return reinterpret_cast<int32_t*>(&e.x);
-        case -9996: return reinterpret_cast<int32_t*>(&e.y);
-        case -9995: return reinterpret_cast<int32_t*>(base + 0x12b4);
-        case -9994: return reinterpret_cast<int32_t*>(base + 0x12b8);
         case -9985: return &e.var[0];
         case -9984: return &e.var[1];
         case -9983: return &e.var[2];
         case -9982: return &e.var[3];
-        case -9981: return &e.var[4];
-        case -9980: return &e.var[5];
-        case -9979: return &e.var[6];
-        case -9978: return &e.var[7];
         case -9949:return &g_enemy_manager->field3c;
         case -9948:return &g_enemy_manager->field40;
         case -9947:return &g_enemy_manager->field44;
@@ -1563,17 +1590,16 @@ static int32_t* enemy_var_ptr(void* host, int32_t id) {
 static float* enemy_var_float_ptr(void* host, int32_t id) {
     auto* base=static_cast<uint8_t*>(host);
     switch(id) {
-    case -9977:case -9997:return reinterpret_cast<float*>(base+0x1270);
-    case -9976:case -9996:return reinterpret_cast<float*>(base+0x1274);
-    case -9975:case -9995:return reinterpret_cast<float*>(base+0x12b4);
-    case -9974:case -9994:return reinterpret_cast<float*>(base+0x12b8);
-    case -9973:case -9993:return reinterpret_cast<float*>(base+0x12f8);
-    case -9972:case -9992:return reinterpret_cast<float*>(base+0x12fc);
+    case -9995:return reinterpret_cast<float*>(base+0x12b4);
+    case -9994:return reinterpret_cast<float*>(base+0x12b8);
+    case -9993:return reinterpret_cast<float*>(base+0x12f8);
+    case -9992:return reinterpret_cast<float*>(base+0x12fc);
     }
+    if(id>=-9981 && id<=-9978)return reinterpret_cast<float*>(base+0x14c8)+id+9981;
     if(id>=-9935 && id<=-9932)return reinterpret_cast<float*>(base+0x14d8)+id+9935;
     if(id>=-9922 && id<=-9915)return reinterpret_cast<float*>(g_enemy_manager)+7+id+9922;
     if(id>=-9939 && id<=-9936){Enemy* boss=find_enemy(g_enemy_manager->boss_id[0]);return reinterpret_cast<float*>(&(boss?boss:static_cast<Enemy*>(host))->var[4+id+9939]);}
-    return reinterpret_cast<float*>(enemy_var_ptr(host, id));
+    return nullptr;
 }
 
 static int32_t enemy_exec(void* host) {
@@ -1962,6 +1988,13 @@ static int32_t enemy_exec(void* host) {
     case 535: {int values[4];for(int i=0;i<4;i++)values[i]=arg_int(e,i+1);*vm_write_int(g_active_thread,ins,0)=values[g_difficulty<3?g_difficulty:3];break;}
     case 536: {float values[4];for(int i=0;i<4;i++)values[i]=arg_float(e,i+1);*vm_write_float(g_active_thread,ins,0)=values[g_difficulty<3?g_difficulty:3];break;}
     case 556:e.death_sub=reinterpret_cast<const char*>(ins)+20;break;
+    case 555: {
+        // 430d30 group 60 -> 409990: membership, including enemies pending deletion.
+        int32_t* destination=vm_write_int(g_active_thread?g_active_thread:e.thread,ins,0);
+        const int32_t id=arg_int(e,1);
+        *destination=id!=0 && find_enemy(id)!=nullptr;
+        break;
+    }
     case 566:return 1; // 430f52: die -> 430240, after unwinding the executing ECL tree.
     case 800: {
         Enemy* target=find_enemy(g_enemy_manager->boss_id[arg_int(e,0)]);
@@ -2124,12 +2157,21 @@ static float vm_read_number(EclThread* t,const ecl::InsHeader* ins,int32_t index
 }
 static float vm_read_float(EclThread* t,const ecl::InsHeader* ins,int32_t index) { return vm_read_number(t,ins,index); }
 static int32_t* vm_write_int(EclThread* t,const ecl::InsHeader* ins,int32_t index) {
+    if((ins->param_mask&(1u<<index))==0)return nullptr; // 48d750
     char type=0;const uint8_t* p=param_ptr(ins,index,&type);
     int32_t v=type=='f'?int32_t(*reinterpret_cast<const float*>(p)):*reinterpret_cast<const int32_t*>(p);
     if(v>=0) return reinterpret_cast<int32_t*>(t->stack+t->stack_ret+v);
     auto* host=*reinterpret_cast<EclHostTable**>(t->owner);return host->var_ptr(t->owner,v);
 }
-static float* vm_write_float(EclThread* t,const ecl::InsHeader* ins,int32_t index) {return reinterpret_cast<float*>(vm_write_int(t,ins,index));}
+static float* vm_write_float(EclThread* t,const ecl::InsHeader* ins,int32_t index) {
+    // 48d7c0 uses the float address getter, not the integer variable table.
+    if((ins->param_mask&(1u<<index))==0)return nullptr;
+    char type=0;const uint8_t* p=param_ptr(ins,index,&type);
+    const int32_t id=int32_t(*reinterpret_cast<const float*>(p));
+    if(id>=0)return reinterpret_cast<float*>(t->stack+t->stack_ret+id);
+    auto* host=*reinterpret_cast<EclHostTable**>(t->owner);
+    return host->var_float_ptr(t->owner,id);
+}
 
 static void call_arguments(EclThread* from,const ecl::InsHeader* ins,EclThread* to,int skip) {
     const auto* data=reinterpret_cast<const uint8_t*>(ins)+16;
