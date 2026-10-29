@@ -404,9 +404,10 @@ inline constexpr InsInfo kInsTable[] = {
     { 801, "ffS", 0xAB},
     { 802, "S", 0xAC},
     { 900, "S", kInsNoGroup},
-    { 901, "", kInsNoGroup},
-    { 902, "", kInsNoGroup},
-    { 904, "f", kInsNoGroup},
+    // Retail 4366f4 dispatches these debug instructions to the no-op group.
+    { 901, "", 0xAE},
+    { 902, "", 0xAE},
+    { 904, "f", 0xAE},
     {1000, "", kInsNoGroup},
     {1001, "S", 0xAD},
     {1002, "f", kInsNoGroup},

@@ -279,6 +279,7 @@ void anm_set_sprite(AnmVm* vm, AnmResource* res, int sprite);
 //   找 type 5 且 payload(float) == label 的指令跳过去，然后清 label 和 flags2 的 0x4000 位。
 //   游戏逻辑用它在动画之间切换（原版大量调用 sub_488be0）。
 void anm_set_label(AnmVm* vm, int label);
+void anm_set_layer(AnmVm* vm, int layer); // 4066b0: layer, origin and coordinate mode
 // sub_488c60：中断后立即执行根 VM 及其子 VM。
 void anm_interrupt(AnmVm* vm, int label);
 // sub_4890b0/489230：按脚本号查找子 VM（index 为同号的第几个）。

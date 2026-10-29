@@ -1498,8 +1498,19 @@ void anm_vm_set_script(AnmVm* vm, AnmResource* res, int script_id)
     anm_vm_update(vm);
 }
 
+void anm_set_layer(AnmVm* vm,int layer)
+{
+    // 4066b0: changing to a playfield layer preserves the coordinate-scale mode.
+    vm->draw_layer=layer;
+    vm->flags3&=~0x300000u;
+    if(layer>=3 && layer<=19)vm->flags3|=0x100000u;
+    else if(layer>=20 && layer<=23)vm->flags3|=0x200000u;
+    if((layer>=20 && layer<=32) || (layer>=37 && layer<=45))
+        vm->flags3=(vm->flags3&~0x1800000u)|0x400000u;
+}
+
 // —— 插值器（原版块结构，sub_405aa0 / sub_406750 / sub_47c960） ——
-// 1 分量块（alpha，base = vm+0x140）：+0x00 起始值，+0x04 结束值（type 7/0x11 当增量），
+// 1 分量块：+0x00 起始值，+0x04 结束值（type 7/0x11 当增量），
 //   +0x08/+0x0c hermite A/B，+0x10 当前值，+0x14 上次帧号，+0x18 帧计数，
 //   +0x1c 累计时间，+0x20 复位，+0x24 flags(bit0)，+0x28 持续时间，+0x2c 类型。
 // 3 分量块（旋转/位置）：+0x00/+0x04/+0x08 起始值，+0x0c..+0x14 结束值（type 7/0x11 当增量），
@@ -1513,7 +1524,7 @@ float easing_ratio(uint32_t type, float current, float duration)
     // 402fb0 / jump table 4035d8: 1..3 accelerate (powers 2..4),
     // 4..6 decelerate (powers 2..4). These IDs also drive STD/ECL movement.
     if (duration == 0.0f)
-        return 0.0f;
+        return 1.0f;
     const float t = current / duration;
     const float u = 1.0f - t;
     switch (type)
@@ -1524,7 +1535,45 @@ float easing_ratio(uint32_t type, float current, float duration)
     case 4: return 1.0f - u * u;
     case 5: return 1.0f - u * u * u;
     case 6: return 1.0f - u * u * u * u;
-    case 9: return t < 0.5f ? 2.0f * t * t : 1.0f - 2.0f * u * u;
+    case 9:case 10:case 11: {
+        const float x=t+t<1.0f?t+t:2.0f-(t+t);
+        float power=x*x;
+        if(type>=10)power*=x;
+        if(type==11)power*=x;
+        return t+t<1.0f?power*0.5f:(2.0f-power)*0.5f;
+    }
+    case 12:case 13:case 14: {
+        const float x=t+t<1.0f?1.0f-(t+t):(t+t)-1.0f;
+        float power=x*x;
+        if(type>=13)power*=x;
+        if(type==14)power*=x;
+        return t+t<1.0f?0.5f-power*0.5f:power*0.5f+0.5f;
+    }
+    case 15:return 0.0f;
+    case 16:return 1.0f;
+    case 18:return float(std::sin(double((t*3.1415927410125732f)*0.5f)));
+    case 19:return 1.0f-float(std::sin(double((t*3.1415927410125732f)*0.5f+1.5707963705062866f)));
+    case 20: {
+        const float sine=float(std::sin(double(((t+t)*3.1415927410125732f)*0.5f)));
+        return t+t<1.0f?sine*0.5f:(1.0f-sine)*0.5f+0.5f;
+    }
+    case 21:
+        if(t+t<1.0f)return (1.0f-float(std::sin(double(((t+t)*3.1415927410125732f)*0.5f+1.5707963705062866f))))*0.5f;
+        return float(std::sin(double((((t+t)-1.0f)*3.1415927410125732f)*0.5f)))*0.5f+0.5f;
+    case 22:case 23:case 24:case 25:case 26:
+    case 27:case 28:case 29:case 30:case 31: {
+        // 402fb0's five overshoot curves and their reversed counterparts.
+        static const float curve[5][4]={
+            {0.25f,0.5625f,0.1111111119389534f,0.8888888955116272f},
+            {0.30000001192092896f,0.4899999797344208f,0.18367348611354828f,0.8163264989852905f},
+            {0.3499999940395355f,0.42249995470046997f,0.28994083404541016f,0.7100591659545898f},
+            {0.3799999952316284f,0.38440001010894775f,0.3756503462791443f,0.6243496537208557f},
+            {0.4000000059604645f,0.36000001430511475f,0.4444444477558136f,0.5555555820465088f}};
+        const float* c=curve[(type-22)%5];
+        const float x=(type>=27?u:t)-c[0];
+        const float value=(x*x/c[1]-c[2])/c[3];
+        return type>=27?1.0f-value:value;
+    }
     default: return t;
     }
 }
@@ -1622,7 +1671,7 @@ void interp_eval3(uint8_t* base, float out[3])
     f[14] = out[2];
 }
 
-// sub_47cf40：1 分量（alpha）插值器评估。
+// 47cc50: floating-point scalar interpolation (motion, rotation, ECL tasks).
 float interp_eval1(uint8_t* base)
 {
     float* f = reinterpret_cast<float*>(base);
@@ -1683,23 +1732,62 @@ float interp_eval1(uint8_t* base)
     return f[4];
 }
 
-// sub_47d120：颜色块评估（3 分量块，起始/结束是 0..255 的浮点分量），
-// 算完把 B/G/R 三个字节写回小端 ARGB。
+// 47cf40: alpha endpoints/current values are integers; only the clock is float.
+static int32_t alpha_interp_eval(uint8_t* base)
+{
+    auto* i=reinterpret_cast<int32_t*>(base);
+    auto* f=reinterpret_cast<float*>(base);
+    const int duration=i[10],type=i[11];
+    if(duration>0) {
+        i[8]=0;interpolation_clock(i[5],i[6],f[7]);
+        if(i[6]>=duration) {
+            if((i[9]&1)==0){i[8]=0;i[9]|=1;}
+            i[5]=duration-1;i[6]=duration;f[7]=float(duration);i[10]=0;
+        }
+    }
+    if(i[10]==0)return type==7 || type==17?i[0]:i[1];
+    if(type==7){i[0]+=i[1];i[4]=i[0];}
+    else if(type==17){i[0]+=i[3];i[3]+=i[1];i[4]=i[0];}
+    else if(type==8) {
+        const float t=f[7]/float(duration),u=t-1.0f;
+        i[4]=int32_t(t*t*(3.0f-(t+t))*float(i[1])+
+            u*u*(t+t+1.0f)*float(i[0])+
+            (1.0f-t)*(1.0f-t)*t*float(i[2])+u*t*t*float(i[3]));
+    } else i[4]=int32_t(easing_ratio(type,f[7],float(duration))*float(i[1]-i[0])+float(i[0]));
+    return i[4];
+}
+
+// 47d120/47c750: RGB interpolation truncates each delta before adding its
+// integer start, then writes the low byte without clamping overshoot curves.
 void color_interp_apply(uint8_t* base, uint32_t* color)
 {
-    float rgb[3];
-    interp_eval3(base, rgb);
-    uint32_t channel[3];
-    for (int c = 0; c < 3; ++c)
-    {
-        float v = rgb[c];
-        if (v < 0.0f)
-            v = 0.0f;
-        if (v > 255.0f)
-            v = 255.0f;
-        channel[c] = static_cast<uint32_t>(v);
+    auto* i=reinterpret_cast<int32_t*>(base);
+    auto* f=reinterpret_cast<float*>(base);
+    const int duration=i[20],type=i[21];
+    if(duration>0) {
+        i[18]=0;interpolation_clock(i[15],i[16],f[17]);
+        if(i[16]>=duration) {
+            if((i[19]&1)==0){i[18]=0;i[19]|=1;}
+            i[15]=duration-1;i[16]=duration;f[17]=float(duration);i[20]=0;
+        }
     }
-    *color = (*color & 0xff000000u) | (channel[2] << 16) | (channel[1] << 8) | channel[0];
+    int channel[3];
+    if(i[20]==0)for(int c=0;c<3;++c)channel[c]=i[(type==7 || type==17?0:3)+c];
+    else {
+        const float t=f[17]/float(duration),u=t-1.0f;
+        const float ratio=easing_ratio(type,f[17],float(duration));
+        for(int c=0;c<3;++c) {
+            if(type==7){i[c]+=i[3+c];channel[c]=i[c];}
+            else if(type==17){i[c]+=i[9+c];i[9+c]+=i[3+c];channel[c]=i[c];}
+            else if(type==8)channel[c]=int32_t(float(i[3+c])*(t*t*(3.0f-(t+t))))+
+                int32_t(float(i[6+c])*((1.0f-t)*(1.0f-t)*t))+
+                int32_t(float(i[9+c])*(u*t*t))+int32_t(float(i[c])*(u*u*(t+t+1.0f)));
+            else channel[c]=int32_t(float(i[3+c]-i[c])*ratio)+i[c];
+            i[12+c]=channel[c];
+        }
+    }
+    *color=(*color&0xff000000u)|(uint32_t(uint8_t(channel[2]))<<16)|
+        (uint32_t(uint8_t(channel[1]))<<8)|uint8_t(channel[0]);
 }
 
 void interp_eval2(uint8_t* base, float out[2])
@@ -2319,13 +2407,7 @@ void anm_execute_script(AnmVm* vm)
         }
 
         case 304: { // 4066b0: layer, coordinate origin, then default coordinate scale.
-            const int32_t layer = *reinterpret_cast<const int32_t*>(payload);
-            vm->draw_layer = layer;
-            vm->flags3 &= ~0x300000u;
-            if (layer >= 3 && layer <= 19) vm->flags3 |= 0x100000u;
-            else if (layer >= 20 && layer <= 23) vm->flags3 |= 0x200000u;
-            if ((layer >= 20 && layer <= 32) || (layer >= 37 && layer <= 45))
-                vm->flags3 = (vm->flags3 & ~0x1c00000u) | 0x400000u;
+            anm_set_layer(vm,*reinterpret_cast<const int32_t*>(payload));
             vm->script_cursor += length;
             break;
         }
@@ -2602,7 +2684,6 @@ void anm_execute_script(AnmVm* vm)
         {
             const bool alt = instr->type == 414;
             uint8_t* base = reinterpret_cast<uint8_t*>(vm) + (alt ? 0x31c : 0x140);
-            float* f = reinterpret_cast<float*>(base);
             int32_t* i = reinterpret_cast<int32_t*>(base);
             uint32_t duration = *reinterpret_cast<const uint32_t*>(payload);
             if ((mask & 1) != 0)
@@ -2611,21 +2692,17 @@ void anm_execute_script(AnmVm* vm)
             uint32_t end = payload[8];
             if ((mask & 4) != 0)
                 end = anm_vm_get_var(vm, end);
-            const float start = static_cast<float>(((alt ? vm->color_alt : vm->color) >> 24) & 0xff);
-            i[0] = 0;
-            i[1] = 0;
+            const int start = ((alt ? vm->color_alt : vm->color) >> 24) & 0xff;
             i[2] = 0;
             i[3] = 0;
-            i[4] = 0;
             i[5] = -1;
             i[6] = 0;
             i[7] = 0;
-            i[8] = 0;
-            i[9] |= 1;
+            if((i[9]&1)==0){i[8]=0;i[9]|=1;}
             i[10] = static_cast<int32_t>(duration);
             i[11] = static_cast<int32_t>(type);
-            f[0] = start;
-            f[1] = static_cast<float>(end);
+            i[0] = start;
+            i[1] = uint8_t(end);
             if (alt && (vm->flags2 & 0xe0000u) == 0)
                 vm->flags2 = (vm->flags2 & ~0xc0000u) | 0x20000u;
             vm->script_cursor += length;
@@ -2656,19 +2733,18 @@ void anm_execute_script(AnmVm* vm)
             if ((mask & 0x10) != 0)
                 b = anm_vm_get_var(vm, b);
             const uint32_t cur = alt ? vm->color_alt : vm->color;
-            f[0] = static_cast<float>(cur & 0xff);
-            f[1] = static_cast<float>((cur >> 8) & 0xff);
-            f[2] = static_cast<float>((cur >> 16) & 0xff);
-            f[3] = static_cast<float>(b);
-            f[4] = static_cast<float>(g);
-            f[5] = static_cast<float>(r);
+            i[0] = cur & 0xff;
+            i[1] = (cur >> 8) & 0xff;
+            i[2] = (cur >> 16) & 0xff;
+            i[3] = uint8_t(b);
+            i[4] = uint8_t(g);
+            i[5] = uint8_t(r);
             f[6] = f[7] = f[8] = 0.0f;
             f[9] = f[10] = f[11] = 0.0f;
             i[15] = -1;
             i[16] = 0;
             f[17] = 0.0f;
-            i[18] = 0;
-            i[19] |= 1;
+            if((i[19]&1)==0){i[18]=0;i[19]|=1;}
             i[20] = static_cast<int32_t>(duration);
             i[21] = static_cast<int32_t>(type);
             vm->script_cursor += length;
@@ -2830,19 +2906,13 @@ static void update_vm_self(AnmVm* vm)
     // alpha 插值块（vm+0x140，sub_47cf40）：算完写回颜色的 A 字节。
     if (*reinterpret_cast<int32_t*>(raw + 0x168) != 0)
     {
-        int32_t alpha = static_cast<int32_t>(interp_eval1(raw + 0x140));
-        if (alpha < 0)
-            alpha = 0;
-        if (alpha > 0xff)
-            alpha = 0xff;
-        vm->color = (vm->color & 0x00ffffffu) | (static_cast<uint32_t>(alpha) << 24);
+        const uint32_t alpha=uint8_t(alpha_interp_eval(raw+0x140));
+        vm->color=(vm->color&0x00ffffffu)|(alpha<<24);
     }
     if (*reinterpret_cast<int32_t*>(raw + 0x344) != 0)
     {
-        int32_t alpha = static_cast<int32_t>(interp_eval1(raw + 0x31c));
-        if (alpha < 0) alpha = 0;
-        if (alpha > 255) alpha = 255;
-        vm->color_alt = (vm->color_alt & 0x00ffffffu) | (static_cast<uint32_t>(alpha) << 24);
+        const uint32_t alpha=uint8_t(alpha_interp_eval(raw+0x31c));
+        vm->color_alt=(vm->color_alt&0x00ffffffu)|(alpha<<24);
     }
     // 第一/第二套颜色插值块（vm+0xe8 / vm+0x2c4，sub_47d120）：算完写回 RGB 字节。
     if (*reinterpret_cast<int32_t*>(raw + 0x138) != 0)

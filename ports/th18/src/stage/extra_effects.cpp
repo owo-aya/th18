@@ -151,7 +151,7 @@ void extra_maple_spawn(AnmResource* resource) {
     q[3]=start.x;q[4]=start.y+200;q[5]=start.z+visual_random()*200+800;
     ints[15]=-1;ints[19]=1;ints[20]=160;ints[21]=8;
     auto* alpha=reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(vm)+0x140);
-    auto* clock=reinterpret_cast<int32_t*>(alpha);alpha[0]=64;alpha[1]=0;
+    auto* clock=reinterpret_cast<int32_t*>(alpha);clock[0]=64;clock[1]=0;
     clock[5]=-1;clock[6]=0;alpha[7]=0;clock[8]=0;clock[9]=1;clock[10]=160;clock[11]=0;
     anm_manage_vm(vm,nullptr);vm->node_flags=0;anm_queue_add(vm);
 }

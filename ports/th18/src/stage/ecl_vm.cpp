@@ -384,6 +384,7 @@ Enemy* create_enemy(const char* sub_name, const SpawnArgs& args) {
     enemy->health_max = args.health;
     enemy->health_previous = args.health;
     enemy->anm_index=2;
+    enemy->animation_layer=1; // 42e100: default enemy layer is 1+7.
     *reinterpret_cast<uint8_t*>(base + 0x1030) = static_cast<uint8_t>(1 << (g_difficulty & 0x1f));
 
     enemy->flag = (args.flags & 1 ? 0x80000u : 0u) |
@@ -1602,6 +1603,74 @@ static float* enemy_var_float_ptr(void* host, int32_t id) {
     return nullptr;
 }
 
+// 436cf0: all animation controls share the unsigned slot check and handle lookup.
+// Managed visual slots are cleared by anm_vm_free when the native handle expires.
+static void enemy_animation_control(Enemy& e,int op) {
+    const int slot=arg_int(e,0);
+    if(uint32_t(slot)>=16)return;
+    AnmVm* vm=e.visual[slot];
+    if(!vm)return;
+    auto* raw=reinterpret_cast<uint8_t*>(vm);
+    switch(op) {
+    case 319:vm->rot_z=arg_float(e,1);vm->flags2|=4u;break;
+    case 325: {
+        const uint32_t b=uint8_t(arg_int(e,3)),g=uint8_t(arg_int(e,2)),r=uint8_t(arg_int(e,1));
+        vm->color=(vm->color&0xff000000u)|(r<<16)|(g<<8)|b;break;
+    }
+    case 326: {
+        const int r=uint8_t(arg_int(e,3)),g=uint8_t(arg_int(e,4)),b=uint8_t(arg_int(e,5));
+        const int mode=arg_int(e,2),duration=arg_int(e,1);
+        auto* i=reinterpret_cast<int32_t*>(raw+0xe8);
+        i[0]=vm->color&255;i[1]=(vm->color>>8)&255;i[2]=(vm->color>>16)&255;
+        i[3]=b;i[4]=g;i[5]=r;
+        i[6]=i[7]=i[8]=i[9]=i[10]=i[11]=0;
+        if((i[19]&1)==0){i[18]=0;i[19]|=1;}
+        i[15]=-1;i[16]=0;i[17]=0;i[20]=duration;i[21]=mode;break;
+    }
+    case 327:case 331: {
+        const uint32_t alpha=uint8_t(arg_int(e,1));
+        uint32_t& color=op==327?vm->color:vm->color_alt;
+        color=(color&0xffffffu)|(alpha<<24);break;
+    }
+    case 328:case 332: {
+        const int alpha=uint8_t(arg_int(e,3)),mode=arg_int(e,2),duration=arg_int(e,1);
+        auto* i=reinterpret_cast<int32_t*>(raw+(op==328?0x140:0x31c));
+        i[0]=(op==328?vm->color:vm->color_alt)>>24;i[1]=alpha;
+        if(op==328)i[2]=i[3]=0;
+        if((i[9]&1)==0){i[8]=0;i[9]|=1;}
+        i[5]=-1;i[6]=0;i[7]=0;i[10]=duration;i[11]=mode;
+        if(op==332 && (vm->flags2&0xe0000u)==0)vm->flags2=(vm->flags2&~0xc0000u)|0x20000u;
+        break;
+    }
+    case 329:case 335: {
+        const float y=arg_float(e,2),x=arg_float(e,1);
+        if(op==329){vm->scale_x=x;vm->scale_y=y;}
+        else {vm->scale_extra_x=x;vm->scale_extra_y=y;}
+        vm->flags2|=8u;break;
+    }
+    case 330: {
+        const float y=arg_float(e,4),x=arg_float(e,3);
+        const int mode=arg_int(e,2),duration=arg_int(e,1);
+        auto* f=reinterpret_cast<float*>(raw+0x1f8);auto* i=reinterpret_cast<int32_t*>(f);
+        f[0]=vm->scale_x;f[1]=vm->scale_y;f[2]=x;f[3]=y;
+        if((i[14]&1)==0){i[13]=0;i[14]|=1;}
+        i[10]=-1;i[11]=0;f[12]=0;i[15]=duration;i[16]=mode;break;
+    }
+    case 333: {
+        const float y=arg_float(e,4),x=arg_float(e,3);
+        const int source_slot=arg_int(e,0),mode=arg_int(e,2),duration=arg_int(e,1);
+        const AnmVm* source=e.visual[source_slot];
+        auto* f=reinterpret_cast<float*>(raw+0x90);auto* i=reinterpret_cast<int32_t*>(f);
+        f[0]=source->extra_x;f[1]=source->extra_y;f[2]=source->extra_z;
+        f[3]=x;f[4]=y;f[5]=0;f[6]=f[7]=f[8]=f[9]=f[10]=f[11]=0;
+        if((i[19]&1)==0){i[18]=0;i[19]|=1;}
+        i[15]=-1;i[16]=0;f[17]=0;i[20]=duration;i[21]=mode;break;
+    }
+    case 336:anm_set_layer(vm,arg_int(e,1));break;
+    case 337:vm->flags2=(vm->flags2&~0x1e0u)|((uint32_t(arg_int(e,1))<<5)&0x1e0u);break;
+    }
+}
+
 static int32_t enemy_exec(void* host) {
     auto& e=*static_cast<Enemy*>(host);const ecl::InsHeader* ins=thread_current(g_active_thread?g_active_thread:e.thread);
     const int op=ins->id;
@@ -1612,6 +1681,7 @@ static int32_t enemy_exec(void* host) {
         return 0;
     }
     if(ins_group(op)==0) {op_create_enemy(e);return 0;}
+    if(ins_group(op)==0x0d) {enemy_animation_control(e,op);return 0;}
     switch(op) {
     case 302:e.anm_index=arg_int(e,0);break;
     case 303: {
@@ -1650,12 +1720,6 @@ static int32_t enemy_exec(void* host) {
         const int offset=arg_int(e,1);
         enemy_set_animation(e,arg_int(e,0),e.primary_base_script+(offset<0?0:offset+5),e.anm_index);break;
     }
-    case 319: {
-        // 436cf0: direct Z rotation of an existing enemy animation slot.
-        auto* vm=e.visual[arg_int(e,0)];
-        if(vm){vm->rot_z=arg_float(e,1);vm->flags2|=4;}
-        break;
-    }
     case 317: {
         if(auto* vm=e.visual[arg_int(e,0)])anm_set_label(vm,int16_t(arg_int(e,1)));
         break;
@@ -1666,23 +1730,6 @@ static int32_t enemy_exec(void* host) {
         break;
     }
     case 322:e.animation_parent[arg_int(e,0)]=arg_int(e,1);break;
-    case 326:case 328: {
-        const int slot=arg_int(e,0);auto* vm=e.visual[slot];
-        if(vm==nullptr)break; // 436cf0 ignores an animation slot whose VM has ended.
-        const int duration=arg_int(e,1),mode=arg_int(e,2);
-        auto* raw=reinterpret_cast<uint8_t*>(vm)+(op==326?0xe8:0x140);
-        auto* q=reinterpret_cast<float*>(raw);auto* ints=reinterpret_cast<int32_t*>(raw);
-        if(op==326) {
-            q[0]=float(vm->color&0xff);q[1]=float((vm->color>>8)&0xff);q[2]=float((vm->color>>16)&0xff);
-            q[5]=float(arg_int(e,3)&0xff);q[4]=float(arg_int(e,4)&0xff);q[3]=float(arg_int(e,5)&0xff);
-            q[6]=q[7]=q[8]=q[9]=q[10]=q[11]=0;
-            ints[15]=-1;ints[16]=0;q[17]=0;ints[18]=0;ints[19]|=1;ints[20]=duration;ints[21]=mode;
-        } else {
-            q[0]=float(vm->color>>24);q[1]=float(arg_int(e,3)&0xff);q[2]=q[3]=0;
-            ints[5]=-1;ints[6]=0;q[7]=0;ints[8]=0;ints[9]|=1;ints[10]=duration;ints[11]=mode;
-        }
-        break;
-    }
     case 318:
         enemy_set_animation(e,0,e.primary_base_script,e.anm_index);e.flag&=~0x100000u;
         e.primary_anm_script=e.primary_base_script;e.primary_anim_state=0;e.primary_anm_index=e.anm_index;break;
