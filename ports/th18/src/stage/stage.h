@@ -28,12 +28,14 @@ int32_t enemy_count();
 void spawn_item(int32_t kind,const float* position,float angle,float speed,int32_t delay);
 int cancel_enemy_bullets_circle(float x,float y,float radius,int kind);
 // 429370 only; Bomb supplies its own laser drop mode and immunity handling.
-int cancel_ordinary_bullets_circle(float x,float y,float radius,int kind);
+// cancel_flag is +678: queue label 3 on the independent disappearance VM.
+int cancel_ordinary_bullets_circle(float x,float y,float radius,int kind,int cancel_flag=0);
 // 429250: unlike 429370, this also cancels bullets with a nonzero delay.
 void cancel_delayed_enemy_bullets_circle(float x,float y,float radius,int kind);
+// Magatama / OptionBR: maximum 1 and ordinary-bullet cancel flag 1.
 bool cancel_one_enemy_bullet(float x,float y,float radius,int kind);
 void cancel_enemy_bullets_rectangle(float x,float y,float width,float height,float angle,int kind);
-void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind);
+void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind,int cancel_flag=0);
 void set_enemy_bullets_frozen(bool frozen);
 void psyco_reflect_bullets(float x,float y,int timer);
 void miko_flash_cancel();

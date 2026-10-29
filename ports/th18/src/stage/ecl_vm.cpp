@@ -67,6 +67,8 @@ struct EnemyBullet {
     alignas(4) uint8_t move_interp[0x58],size_interp[0x30];
     int render_bucket;
     int outside_delay=5; // 424fe0 +670: five updates before screen culling.
+    int cancel_script,cancel_flag; // +674 / +678, independent of the drop mode.
+    bool suspended; // +20 bit 0x200, set while ET4000000 is waiting.
 };
 static constexpr int bullet_render_buckets[]={5,5,5,5,3,3,3,3,4,4,4,3,4,4,4,4,3,3,1,1,2,2,2,1,1,2,2,2,2,1,1,3,0,2,5,4,4,3,2,3,3,3,3,2,1,1,0,0};
 static std::list<EnemyBullet> g_enemy_bullets;
@@ -85,7 +87,7 @@ static ThreadStatus bullets_render_task(void*) {
     anm_begin_batch();
     for(int bucket=0;bucket<6;++bucket)
         for(auto& bullet:g_enemy_bullets)
-            if(bullet.render_bucket==bucket) {
+            if(bullet.render_bucket==bucket && !bullet.suspended) {
                 // 424ef0..424f68: apply auto-facing after the ANM tick, at draw time.
                 // The sprite's zero-angle axis is perpendicular to the motion axis.
                 if(bullet.vm->flags3&0x200) {
@@ -780,6 +782,14 @@ static void bullet_fire(Enemy& e,int index) {
     fire_enemy_bullet_slot(e.bullets[index],(fixed?e.fire_target[index][0]:e.x)+e.fire_offset[index][0],
                           (fixed?e.fire_target[index][1]:e.y)+e.fire_offset[index][1]);
 }
+static int bullet_cancel_script(int type,int color) {
+    const int mode=kBulletTypes[type].cancel_mode;
+    if(mode==0)return color*2+4;
+    if(mode==6)return kBulletSprites[type][color*4+3];
+    // The remaining modes in the 48 original templates are 7 through 10.
+    static constexpr int scripts[]={260,263,266,275};
+    return scripts[mode-7];
+}
 void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin_y) {
     const auto* raw=reinterpret_cast<const uint8_t*>(&slot);
     int count=*reinterpret_cast<const int16_t*>(raw+0x46c),layers=*reinterpret_cast<const int16_t*>(raw+0x46e),mode=*reinterpret_cast<const int16_t*>(raw+0x470);
@@ -823,6 +833,7 @@ void fire_enemy_bullet_slot(const bullet::Slot& slot,float origin_x,float origin
         g_enemy_bullets.push_front(EnemyBullet{origin_x+std::cos(angle)*radius,
             origin_y+std::sin(angle)*radius,speed,angle,def.radius,type,color,vm});
         EnemyBullet& b=g_enemy_bullets.front();
+        b.cancel_script=bullet_cancel_script(type,color);
         b.transform_se=slot.type;
         b.render_bucket=bullet_render_buckets[type];
         b.cursor=*reinterpret_cast<const int32_t*>(raw+0x480);
@@ -869,14 +880,27 @@ void clear_enemy_bullets(float x,float y,float radius,bool money) {
     cancel_enemy_bullets_circle(x,y,radius,money?4:0);
 }
 static void bullet_cancel(EnemyBullet& b,int kind) {
-    cancel_bullet_point(b.x,b.y,kind);
-    b.cancel_state=4;b.x+=b.vx*g_speed_scale*0.5f;b.y+=b.vy*g_speed_scale*0.5f;
+    // 428e90: the embedded VM exits immediately, before the independent effect.
     anm_interrupt(b.vm,1);
+    // All 48 templates have +114 == 0: no independent +634 VM is created.
+    if(!b.suspended) {
+        if(b.cancel_script>=0) {
+            auto* vm=anm_vm_alloc(g_bullet_anm);
+            anm_vm_bind_script(vm,g_bullet_anm,b.cancel_script);
+            vm->flags3|=0x1000u;vm->extra_x=b.x;vm->extra_y=b.y;vm->extra_z=0.1f;
+            anm_vm_update(vm);anm_queue_add(vm);
+            g_cancel_effects.push_back(vm);anm_manage_vm(vm,&g_cancel_effects.back());
+            if(b.cancel_flag!=0)anm_set_label(vm,3);
+        }
+        sound_play_se_at(71,b.x);
+        cancel_bullet_point(b.x,b.y,kind);
+    }
+    b.cancel_state=4;b.x+=b.vx*g_speed_scale*0.5f;b.y+=b.vy*g_speed_scale*0.5f;
+    b.age=0;b.collision_time=0;
 }
 // 4297a0: unconditional full-field cancellation includes delayed bullets.
 static void clear_all_enemy_bullets() {
     for(auto& b:g_enemy_bullets)if(!b.removed && b.cancel_state!=3) {
-        if(b.delay==0)sound_play_se_at(0x47,b.x);
         bullet_cancel(b,0);
     }
 }
@@ -916,11 +940,11 @@ void cancel_delayed_enemy_bullets_circle(float x,float y,float radius,int kind) 
         if(b.cancel_state==0 && dx*dx+dy*dy<=r*r)bullet_cancel(b,kind);
     }
 }
-int cancel_ordinary_bullets_circle(float x,float y,float radius,int kind) {
+int cancel_ordinary_bullets_circle(float x,float y,float radius,int kind,int cancel_flag) {
     int count=0;
     for(auto& b:g_enemy_bullets) {
         const float dx=b.x-x,dy=b.y-y,r=radius+b.radius*0.5f;
-        if(b.cancel_state==0 && b.delay==0 && dx*dx+dy*dy<=r*r){bullet_cancel(b,kind);++count;}
+        if(b.cancel_state==0 && b.delay==0 && dx*dx+dy*dy<=r*r){b.cancel_flag=cancel_flag;bullet_cancel(b,kind);++count;}
     }
     return count;
 }
@@ -931,7 +955,7 @@ int cancel_enemy_bullets_circle(float x,float y,float radius,int kind) {
 bool cancel_one_enemy_bullet(float x,float y,float radius,int kind) {
     for(auto& b:g_enemy_bullets) {
         const float dx=b.x-x,dy=b.y-y,r=radius+b.radius*0.5f;
-        if(b.cancel_state==0 && b.delay==0 && dx*dx+dy*dy<=r*r){bullet_cancel(b,kind);return true;}
+        if(b.cancel_state==0 && b.delay==0 && dx*dx+dy*dy<=r*r){b.cancel_flag=1;bullet_cancel(b,kind);return true;}
     }
     return false;
 }
@@ -944,14 +968,16 @@ static bool cancel_rectangle_intersects(float x,float y,float half_width,float h
     const float r2=radius*radius;
     return y0+x0<r2 || y0+x1<r2 || y1+x0<r2 || y1+x1<r2;
 }
-void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind) {
+void cancel_ordinary_bullets_rectangle(float x,float y,float width,float height,float angle,int kind,int cancel_flag) {
     const float c=std::cos(angle),s=std::sin(angle);
     for(auto& b:g_enemy_bullets) {
         if(b.cancel_state!=0 || b.delay!=0)continue;
         const float dx=b.x-x,dy=b.y-y;
         const float radius=b.radius*b.size_scale;
         if(cancel_rectangle_intersects(c*dx+s*dy,c*dy-s*dx,width*0.5f,height*0.5f,radius) &&
-           cancel_rectangle_intersects(b.x,b.y-224.0f,192.0f,224.0f,radius))bullet_cancel(b,kind);
+           cancel_rectangle_intersects(b.x,b.y-224.0f,192.0f,224.0f,radius)) {
+            b.cancel_flag=cancel_flag;bullet_cancel(b,kind);
+        }
     }
 }
 void cancel_enemy_bullets_rectangle(float x,float y,float width,float height,float angle,int kind) {
@@ -1178,6 +1204,7 @@ static void bullet_extra_start(EnemyBullet& b) {
         case 0x100:b.effect_flags|=0x100;b.timers[bit]=float(x.i[0]);break;
         case 0x200: {
             b.type=x.i[0];b.color=x.i[1]&0x7fff;const auto& def=kBulletTypes[b.type];b.radius=def.radius;b.render_bucket=bullet_render_buckets[b.type];
+            b.cancel_script=bullet_cancel_script(b.type,b.color);
             // 425c60 ET200 reloads the template and restores the same
             // coordinate mode as creation, before the next ANM update.
             anm_vm_bind_script(b.vm,g_bullet_anm,def.script);
@@ -1186,7 +1213,7 @@ static void bullet_extra_start(EnemyBullet& b) {
             if(x.i[1]&0x8000)anm_set_label(b.vm,2);
             break;
         }
-        case 0x400:bullet_cancel(b,0);break;
+        case 0x400:if(x.i[0]==1)b.cancel_script=-1;bullet_cancel(b,0);break;
         case 0x800:sound_play_se_at(x.i[0],b.x);break;
         case 0x2000: {
             // 425c60 consumes the following ET4000 as shot type/color data.
@@ -1296,8 +1323,13 @@ static void bullet_extra_update(EnemyBullet& b) {
                 } else {b.effect_flags&=~9u;completed=true;}
                 break;
             case 0x80000000:case 0x4000000:
-                if(int32_t(time)<1)end=true;
-                else time-=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
+                if(int32_t(time)<1) {
+                    end=true;
+                    if(type==0x4000000)b.suspended=false;
+                } else {
+                    if(type==0x4000000)b.suspended=true;
+                    time-=timer_step;
+                }
                 break;
             case 0x100: {
                 // 428970 expires after decrementing, and can release an
@@ -1379,6 +1411,7 @@ static int bullet_player_collision(EnemyBullet& b,bool query) {
         b.grazed=true;
         player_graze(b.x,b.y);
         if(!card_manager_owned(Yuyuko) || ++g_graze_cancel_count%6!=0)return collision;
+        b.cancel_flag=1;
     }
     b.cancel_state=3;anm_interrupt(b.vm,1);
     return collision;
@@ -1389,6 +1422,7 @@ static void bullets_update() {
         auto current=it++;auto& b=*current;
         const float timer_step=g_speed_scale>0.99f && g_speed_scale<1.01f?1.0f:g_speed_scale;
         if(b.frozen && b.cancel_state==0 && (!b.appearing || b.age>=8)) {
+            // 424d9f calls the query directly, without filtering bit 0x200.
             bullet_player_collision(b,true);
             b.collision_time+=timer_step;b.age=int(b.collision_time);
             continue;
@@ -1405,13 +1439,17 @@ static void bullets_update() {
             b.x+=b.vx*g_speed_scale*(b.appearing?0.5f:1.0f);b.y+=b.vy*g_speed_scale*(b.appearing?0.5f:1.0f);
         }
         int collision=0;
-        if(b.cancel_state==0 && (!b.appearing || b.age>=8))collision=bullet_player_collision(b,false);
+        // State 2's age-8 query ignores bit 0x200; state 1 filters it after ET.
+        if(b.cancel_state==0 && (b.appearing?b.age>=8:!b.suspended))collision=bullet_player_collision(b,false);
         // 423e10 state 2 enters state 1 in this tick after its appearance VM
         // has made var0 nonzero, unless this tick returned a collision hit.
         if(b.appearing && collision!=1 && anm_vm_get_var(b.vm,10000)!=0 && b.cancel_state==0) {
             b.appearing=false;bullet_extra_update(b);
-            if((b.effect_flags&0x4000000)==0) {b.x+=b.vx*g_speed_scale;b.y+=b.vy*g_speed_scale;}
-            if(!b.removed)bullet_player_collision(b,false);
+            // 4245a9: entering state 1 reuses its post-ET movement/collision gate.
+            if(!b.suspended) {
+                b.x+=b.vx*g_speed_scale;b.y+=b.vy*g_speed_scale;
+                if(!b.removed)bullet_player_collision(b,false);
+            }
         }
         const float half_width=b.vm->sprite_w*b.size_scale*0.5f,half_height=b.vm->sprite_h*b.size_scale*0.5f;
         if(b.removed || (b.outside_delay<1 && !(b.effect_flags&0x100) &&
@@ -1421,8 +1459,10 @@ static void bullets_update() {
         if(b.delay!=0)--b.delay;
         if(b.outside_delay>0)--b.outside_delay;
         b.vm->extra_x=b.x;b.vm->extra_y=b.y;
-        anm_vm_update(b.vm);
-        const bool ended=b.vm->script_cursor<0 && (b.vm->flags2&1)==0;
+        // 42486d also applies to state 4: cancellation does not clear bit 0x200,
+        // and state 4 no longer advances the ET that could clear it.
+        if(!b.suspended)anm_vm_update(b.vm);
+        const bool ended=!b.suspended && b.vm->script_cursor<0 && (b.vm->flags2&1)==0;
         b.collision_time+=timer_step;b.age=int(b.collision_time);
         if(ended){anm_vm_free(b.vm);g_enemy_bullets.erase(current);}
     }
