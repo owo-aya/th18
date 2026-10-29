@@ -1220,7 +1220,11 @@ int32_t player_attack_spawn(Player* p, const ShtInstruction* instr, int32_t comm
     else if(instr->handler_a==6)a->motion.angle=rng_float01()*kPiF-kPiF;
     else if(instr->handler_a==7) {
         const float dx=a->motion.x-p->x,dy=a->motion.y-p->y;
-        a->motion.angle=(dx==0 && dy==0?1.57079637f:std::atan2(dy,dx))+rng_float_pm1()*0.03490658477f;
+        const float offset=rng_float_pm1()*0.01745329238474369f;
+        a->motion.angle=(offset+offset)+(dx==0 && dy==0?1.57079637f:std::atan2(dy,dx));
+        while(a->motion.angle>kPiF)a->motion.angle-=kTwoPiF;
+        while(a->motion.angle< -kPiF)a->motion.angle+=kTwoPiF;
+        a->motion.speed=16.0f;
     }
     if(instr->se_id>=0)sound_play_se_at(instr->se_id,a->motion.x);
     // 行 302–313：发射回调返回非 0 时撤销这次发射。
