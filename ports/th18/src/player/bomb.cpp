@@ -9,11 +9,13 @@
 #include "gameplay/spell.h"
 #include "stage/session.h"
 #include "core/thread.h"
+#include "core/rng.h"
 #include "player/player.h"
 #include "projectiles/laser.h"
 #include "presentation/anm.h"
 #include "presentation/sound.h"
 #include "stage/enemy.h"
+#include "stage/extra_effects.h"
 #include "stage/stage.h"
 
 namespace {
@@ -306,18 +308,46 @@ void update_sanae() {
         g_active = false;
         return;
     }
+    const bool burst = g_timer == 180 || (g_enhanced && (g_timer == 240 || g_timer == 300));
+    if (burst) {
+        sound_play_se(6);
+        stage_bomb_shake(4, 1, 60, 10);
+    }
     if (g_timer == 0) player_damage_circle(g_pos, 16, 0.355555564f, 180, 13);
-    else if (g_timer == 180 || (g_enhanced && (g_timer == 240 || g_timer == 300)))
+    else if (burst)
         player_damage_circle(g_pos, 80, 20, 100, g_enhanced ? 30 : 80);
-    if (g_timer == 180 || (g_enhanced && (g_timer == 240 || g_timer == 300))) sound_play_se(6);
+    // 423270: one actual effect per update from frame 30, including slow motion.
+    if (g_timer >= 30) {
+        float pos[3];
+        if (g_timer < (g_enhanced ? 310 : 250)) {
+            const float direction = rng_float_pm1() * kPi;
+            const float radius = rng_float01() * g_primary->scale_x;
+            const float offset_x = float(std::cos(double(direction)) * radius);
+            const float offset_y = float(std::sin(double(direction)) * radius);
+            pos[0] = g_pos[0] + offset_x;
+            pos[1] = g_pos[1] + offset_y;
+            pos[2] = g_pos[2];
+        } else {
+            pos[0] = rng_float_pm1() * 192.0f;
+            pos[1] = rng_float01() * 448.0f;
+            pos[2] = 0;
+        }
+        AnmVm* effect = extra_lightning_spawn(pos);
+        effect->flags2 = (effect->flags2 & ~0x1c0u) | 0x20u;
+    }
     if (g_timer >= (g_enhanced ? 460 : 400)) {
-        anm_set_label(g_primary, 1);
         anm_set_label(g_secondary, 1);
+        anm_set_label(g_primary, 1);
+        // Native clears the primary handle while its exit animation keeps running.
+        anm_manage_vm(g_primary, nullptr);
+        g_primary = nullptr;
         return;
     }
     const float radius = g_timer < 180 ? g_time * 48 / 180 + 16 :
                          g_timer < 200 ? (g_time - 180) * 416 / 20 + 64 : 480;
-    stage::cancel_enemy_bullets_circle(g_pos[0], g_pos[1], radius, 1);
+    const int drop = (spell_manager()->flags & 1u) == 0;
+    stage::cancel_ordinary_bullets_circle(g_pos[0], g_pos[1], radius, drop);
+    laser::cancel_circle(g_pos[0], g_pos[1], radius, drop, 1);
 }
 
 ThreadStatus update(void*) {
@@ -331,9 +361,11 @@ ThreadStatus update(void*) {
         case 2: update_sakuya(); break;
         case 3: update_sanae(); break;
         }
+        if (!g_active) return THREAD_CONTINUE; // 420040: terminating callbacks do not tick.
         g_previous_timer = g_timer;
-        g_time += stage::g_speed_scale;
-        g_timer = static_cast<int>(g_time);
+        const float speed = stage::g_speed_scale;
+        if (speed > 0.99f && speed < 1.01f) {g_time += 1; ++g_timer;}
+        else {g_time += speed; g_timer = static_cast<int>(g_time);}
     }
     return THREAD_CONTINUE;
 }
@@ -394,7 +426,7 @@ static void start_bomb() {
     case 1:
         sound_play_se(49);
         create_vm(g_enhanced ? 29 : 22, g_pos, &g_primary);
-        stage_master_spark_shake(g_enhanced);
+        stage_bomb_shake(3, 60, g_enhanced ? 420 : 240, 30);
         create_vm(36, g_pos, &g_secondary);
         g_player->flags_4779c |= 4;
         invulnerable(120);
@@ -412,6 +444,7 @@ static void start_bomb() {
         create_vm(g_enhanced ? 21 : 17, g_pos, &g_primary);
         create_vm(25, g_pos, &g_secondary);
         invulnerable(110);
+        stage_bomb_shake(3, 60, 240, 30);
         break;
     }
 }

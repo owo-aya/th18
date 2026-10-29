@@ -767,6 +767,7 @@ void anm_draw_vm(AnmVm* vm)
     if ((vm->flags3 & 0x180) != 0)
         return;
     if (vm->callback_index == 8) msg_position_word(vm);
+    if(vm->callback_index==3){flush_sprite_batch();extra_lightning_draw(vm);return;}
     if(vm->callback_index==7){flush_sprite_batch();extra_maple_draw(vm);return;}
     AnmManager* manager = anm_manager();
     const uint32_t render_type = (vm->flags2 >> 26) & 31;
@@ -1442,6 +1443,7 @@ void anm_vm_free(AnmVm* vm)
     unlink_independent(vm);
     if(vm->callback_index==7)extra_maple_free(vm);
     if(vm->callback_index==2)extra_charge_free(vm);
+    if(vm->callback_index==3)extra_lightning_free(vm);
     if (vm->owner_slot != nullptr) *vm->owner_slot = nullptr;
     while(vm->child_head)anm_vm_free(vm->child_head);
     unlink_child(vm);
@@ -1462,6 +1464,7 @@ void anm_vm_free(AnmVm* vm)
 void anm_vm_bind_script(AnmVm* vm, AnmResource* res, int script_id)
 {
     if(vm->callback_index==2)extra_charge_free(vm);
+    if(vm->callback_index==3)extra_lightning_free(vm);
     // Child ownership was formerly tracked by the allocation table, outside
     // the script template. Keep it across a template copy just like queue links.
     AnmVm* child_head=vm->child_head;
@@ -2831,6 +2834,9 @@ void anm_vm_update(AnmVm* vm)
 
 static void update_vm_self(AnmVm* vm)
 {
+    if(vm->callback_index==3 && extra_lightning_update(vm)) {
+        vm->script_cursor=-1;vm->flags2&=~1u;return;
+    }
     if(vm->callback_index==7 && extra_maple_update(vm)) {
         vm->script_cursor=-1;vm->flags2&=~1u;return;
     }

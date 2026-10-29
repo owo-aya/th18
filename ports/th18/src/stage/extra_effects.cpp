@@ -18,6 +18,13 @@ constexpr float pi=3.14159265358979323846f;
 struct Point {float x,y,z;};
 struct RibbonVertex {float x,y,z;uint32_t color;float u,v;};
 struct AuraVertex {float x,y,z,rhw;uint32_t color;float u,v;};
+struct Lightning {
+    float points[64][2]{};
+    uint32_t colors[64];
+    float direction;
+    int previous=0,time=1;
+    float fraction=1;
+};
 struct Maple {
     Point points[32],directions[32],shift;
     uint32_t colors[32],head_color;
@@ -130,6 +137,89 @@ void extra_effects_start() {
 }
 void extra_effects_stop() {
     thread_remove(aura_render);aura_render=nullptr;auras.clear();
+    // The original EffectManager owns effect-3 VMs across Bomb completion.
+    auto* manager=anm_manager();
+    for(auto* head:{manager->queue_head,manager->queue_head2}) {
+        for(auto* vm=static_cast<AnmVm*>(head);vm;) {
+            auto* next=static_cast<AnmVm*>(vm->node_next);
+            if(vm->callback_index==3)anm_vm_free(vm);
+            vm=next;
+        }
+    }
+}
+
+AnmVm* extra_lightning_spawn(const float* position) {
+    // 422d70 -> 42af70 effect 3 -> 4062b0. Run script0 before installing callbacks.
+    auto* resource=anm_get(8,"effect.anm");
+    auto* vm=anm_vm_alloc(resource);
+    anm_vm_bind_script(vm,resource,0);vm->flags3|=0x1000u;
+    anm_vm_update(vm);anm_queue_add(vm);anm_manage_vm(vm,nullptr);
+    auto* lightning=new Lightning{};
+    lightning->direction=(visual_random()*2.0f-1.0f)*pi;
+    for(int n=0;n<64;++n) {
+        uint32_t blue=n<8?255-n*32:80;
+        uint32_t alpha=n>31?uint8_t(~((n-32)<<4)):255;
+        lightning->colors[n]=(alpha<<24)|0x505000u|blue;
+    }
+    vm->callback_object=lightning;vm->callback_index=3;
+    vm->extra_x=position[0];vm->extra_y=position[1];vm->extra_z=position[2];
+    vm->flags2&=~0x1e0u;
+    vm->draw_layer=19;vm->flags3=(vm->flags3&~0x200000u)|0x100000u;
+    return vm;
+}
+
+bool extra_lightning_update(AnmVm* vm) {
+    auto& lightning=*static_cast<Lightning*>(vm->callback_object);
+    const int time=lightning.time;
+    if(time>63)return true;
+    if(time!=lightning.previous) {
+        for(int n=0;n<time;++n) {
+            const uint32_t alpha=lightning.colors[n]>>24;
+            lightning.colors[n]=(lightning.colors[n]&0xffffffu)|((alpha<16?0:alpha-16)<<24);
+        }
+        const float distance=visual_random()*5.0f+4.0f;
+        const float dx=float(std::cos(double(lightning.direction))*distance);
+        const float dy=float(std::sin(double(lightning.direction))*distance);
+        lightning.points[time][0]=lightning.points[time-1][0]+dx;
+        lightning.points[time][1]=lightning.points[time-1][1]+dy;
+        const float turn=(visual_random()*2.0f-1.0f)*pi;
+        lightning.direction=angle(turn/5.0f+lightning.direction);
+    }
+    lightning.previous=time;
+    const float speed=stage::g_speed_scale;
+    if(speed>0.99f && speed<1.01f){++lightning.time;lightning.fraction+=1;}
+    else {lightning.fraction+=speed;lightning.time=int(lightning.fraction);}
+    return false;
+}
+
+void extra_lightning_draw(AnmVm* vm) {
+    // 406090 draws an untextured line strip, using the per-point colors directly.
+    struct Vertex {float x,y,z,rhw;uint32_t color;};
+    auto& lightning=*static_cast<Lightning*>(vm->callback_object);
+    Vertex vertices[64];float position[3],shake_x,shake_y;
+    anm_vm_scene_position(vm,position);
+    gfx_get_camera_shake(gfx_current_camera(),shake_x,shake_y);
+    for(int n=0;n<lightning.time;++n)
+        vertices[n]={position[0]+lightning.points[n][0]+shake_x,
+                     position[1]+lightning.points[n][1]+shake_y,0,1,lightning.colors[n]};
+    auto* device=gfx_device();anm_apply_blend(vm);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);
+    device->SetRenderState(D3DRS_LIGHTING,FALSE);
+    device->SetRenderState(D3DRS_ZENABLE,FALSE);
+    device->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
+    device->SetTexture(0,nullptr);
+    device->SetTextureStageState(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0,D3DTSS_COLORARG1,D3DTA_DIFFUSE);
+    device->SetTextureStageState(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_DIFFUSE);
+    device->SetFVF(D3DFVF_XYZRHW|D3DFVF_DIFFUSE);
+    device->DrawPrimitiveUP(D3DPT_LINESTRIP,lightning.time-1,vertices,sizeof(Vertex));
+    ++anm_manager()->draw_count;
+}
+
+void extra_lightning_free(AnmVm* vm) {
+    delete static_cast<Lightning*>(vm->callback_object);
+    vm->callback_object=nullptr;vm->callback_index=0;
 }
 
 void extra_maple_spawn(AnmResource* resource) {

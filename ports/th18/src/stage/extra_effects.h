@@ -7,6 +7,10 @@ namespace stage {struct Enemy;}
 
 void extra_effects_start();
 void extra_effects_stop();
+AnmVm* extra_lightning_spawn(const float* position);
+bool extra_lightning_update(AnmVm* vm);
+void extra_lightning_draw(AnmVm* vm);
+void extra_lightning_free(AnmVm* vm);
 void extra_maple_spawn(AnmResource* resource);
 bool extra_maple_update(AnmVm* vm);
 void extra_maple_draw(AnmVm* vm);

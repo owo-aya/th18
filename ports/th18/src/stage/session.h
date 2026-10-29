@@ -19,7 +19,7 @@ bool stage_session_can_pause();
 void stage_session_set_paused(bool paused);
 void stage_session_set_wave(int wave);
 void stage_screen_shake(int duration, int from, int to);
-void stage_master_spark_shake(bool enhanced);
+void stage_bomb_shake(int amplitude, int rise, int hold, int fall);
 
 // 销毁会话（原版 FUN_004432c0）：停止任务、释放各管理器、重载成绩、停 BGM。
 void stage_session_destroy(StageSession* session);
