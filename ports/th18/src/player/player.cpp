@@ -917,18 +917,20 @@ int32_t player_bullet_hit_test(const float* pos, const float* size, float radius
                         splash.unk_008=a.handler_d==3?1:*reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(instruction)+0x4c);
                         splash.hit_interval=4;
                         if(a.handler_d==3){auto* motion=reinterpret_cast<Motion*>(splash.motion);motion->speed=0.3f;motion->angle=-1.57079637f;}
-                    }
-                    a.active=2;
-                    if(a.handler_d==3) {
-                        a.motion.speed=0.3f;
                         anm_set_label(a.anm_vm,1);
+                        a.active=2;
+                        a.motion.speed=a.handler_d==3?0.3f:2.0f;
+                        // 460cb0 -> 40c720: the expanding hitbox travels with the slowed shot.
+                        if(a.handler_d==4)std::memcpy(splash.motion,&a.motion,sizeof(Motion));
+                        b.flags&=~1u;a.bullet_index=0;
                         sound_play_se_at(65,a.motion.x);
                     } else {
+                        a.active=2;
                         a.motion.z=0.1f;a.motion.speed*=0.125f;
                         anm_set_label(a.anm_vm,1);
                         a.anm_vm->extra_x=a.motion.x;a.anm_vm->extra_y=a.motion.y;a.anm_vm->extra_z=a.motion.z;
+                        b.flags&=~1u;a.bullet_index=0;
                     }
-                    b.flags&=~1u;a.bullet_index=0;
                 }
             } else if (b.kind == 3) {
                 bomb_marisa_hit(pos); // Native returns -1: retain the hitbox's base damage.
