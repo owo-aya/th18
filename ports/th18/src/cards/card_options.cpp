@@ -320,11 +320,11 @@ void card_options_player_move(AbilityCard* card) {
     const float position[3] = {option->x / 128.0f, option->y / 128.0f, 0.0f};
     switch (id) {
     case OkinaOp:
-        stage::cancel_enemy_bullets_rectangle(position[0], position[1], 20.0f, 6.0f, 0.0f, 0);
+        stage::cancel_ordinary_bullets_rectangle(position[0], position[1], 20.0f, 6.0f, 0.0f, 0);
         player_damage_rectangle(position, 0.0f, 20.0f, 6.0f, 2, 4);
         break;
     case NueOp:
-        stage::cancel_enemy_bullets_circle(position[0], position[1], 6.0f, 0);
+        stage::cancel_ordinary_bullets_circle(position[0], position[1], 6.0f, 0);
         break;
     case Magatama:
         stage::cancel_one_enemy_bullet(position[0], position[1], 3.0f, 0);
