@@ -26,8 +26,9 @@ struct CardManager {
     int32_t count_kind8;         // +0x2c flags_50 & 8 的卡数
     int32_t count_kind40;        // +0x30 flags_50 & 0x40 的卡数
     int32_t count_other;         // +0x34 其余卡数
-    AbilityCard* special;        // +0x38 flags_50 & 8 的唯一卡（MAINSHOT 类）
-    uint8_t unk_3c[8];           // +0x3c..+0x43
+    AbilityCard* special;        // +0x38 当前选中的主动卡实例
+    uint8_t unk_3c[4];           // +0x3c 原版主卡HUD句柄；端口由hud.cpp持有VM
+    int32_t active_hud_near;     // +0x40 主卡避让状态：0正常，1靠近自机
     int32_t visual_previous;    // +0x44 显示计时器
     int32_t visual_frame;       // +0x48 发动闪烁相位
     float visual_time;          // +0x4c 随游戏速度推进

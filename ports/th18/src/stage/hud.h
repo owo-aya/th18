@@ -3,6 +3,7 @@
 
 namespace stage {
 void hud_create(int difficulty, int player);
+void hud_start_cards(); // 407f10：本关开始、卡效果更新前创建卡HUD
 void hud_refresh_cards(bool animate);
 void hud_clear_cards();
 void hud_select_card();

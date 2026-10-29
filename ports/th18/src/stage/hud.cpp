@@ -313,8 +313,14 @@ void hud_create(int difficulty, int player) {
         g_high_score=uint64_t(*reinterpret_cast<uint32_t*>(score_data().character[player]+0x9a8+g_status.spell_id*0xdc))*10;
     else if(session().mode==GameMode::Practice || (playback && (replay_info().mode_flags&1)))
         g_high_score=uint64_t(*reinterpret_cast<uint32_t*>(score_data().character[player]+0x12ef0+(difficulty*9+session().stage)*8))*10;
-    // 00407f10 creates the active-card HUD once on stage entry, even with no
-    // selected card. 00408c30 only changes its visibility and icon thereafter.
+    // Card VMs are replaced by stage_session_start (443e60/4443c0 -> 407f10),
+    // after the background transition rather than during resource loading.
+}
+
+void hud_start_cards() {
+    // 407f10 creates a fresh script0, retaining manager +40 and its clock.
+    // This stage-entry action is not repeated after Blank clears the HUD.
+    hud_clear_cards();
     g_active = create(anm_get(0x1f, "abcard.anm"), 0, false);
     anm_manage_vm(g_active, &g_active);
     hud_select_card();
@@ -412,11 +418,36 @@ void hud_update() {
 
 void hud_update_cards() {
     // 408640 runs at A0x16 after card effects, before the ANM tick.
-    if (g_active == nullptr || card_manager()->special == nullptr) return;
-    cooldown_visual(g_active, 2, 3, card_manager()->special, false);
+    CardManager* manager = card_manager();
+    if (g_active == nullptr || manager->special == nullptr) return;
+    // 4086cc..408740: world-coordinate hysteresis, with immediate interrupts.
+    if (g_player != nullptr) {
+        if (manager->active_hud_near == 0) {
+            if (g_player->y > 368.0f && g_player->x < -64.0f) {
+                anm_interrupt(g_active, 5);
+                manager->active_hud_near = 1;
+            }
+        } else if (g_player->y < 352.0f || g_player->x > -48.0f) {
+            anm_interrupt(g_active, 4);
+            manager->active_hud_near = 0;
+        }
+    }
+    cooldown_visual(g_active, 2, 3, manager->special, false);
     for (int i = 0; i < g_card_count; ++i) {
-        if (g_card_objects[i]->flags_50&8)
-            cooldown_visual(g_cards[i], 9, 7, g_card_objects[i], true);
+        AbilityCard* card = g_card_objects[i];
+        if ((card->flags_50 & 8u) == 0) continue;
+        AnmVm* icon = g_cards[i];
+        cooldown_visual(icon, 9, 7, card, true);
+        // 4087c3..40881a: clear +4e4, then lift only the selected instance.
+        auto* offset = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(icon) + 0x4e4);
+        offset[0] = offset[1] = offset[2] = 0.0f;
+        if (card == manager->special && manager->visual_frame > 79) {
+            offset[1] = -4.0f;
+            AnmVm* highlight = anm_find_child(icon, 11);
+            highlight->color = 0xd080c080u;
+            highlight->color = (highlight->color & 0x00ffffffu) |
+                (anm_find_child(icon, 6)->color & 0xff000000u);
+        }
     }
 }
 
@@ -429,7 +460,9 @@ void hud_spell_end() {
 }
 
 void hud_select_card() {
-    if (g_active == nullptr) return;
+    // Replay restores selection before hud_create; retain the old icon until
+    // stage_session_start -> 407f10 creates this stage's card VMs.
+    if (g_active == nullptr || g_frame == nullptr) return;
     g_active_id = static_cast<CardId>(card_manager_selected_id());
     active_card_visible(g_active, static_cast<int>(g_active_id) >= 0);
     if (static_cast<int>(g_active_id) >= 0)
@@ -492,7 +525,9 @@ void hud_destroy() {
         anm_vm_free(g_lives[i]);
         anm_vm_free(g_bombs[i]);
     }
-    hud_clear_cards();
+    // 4432c0's normal stage transfer retains the card manager and card VMs.
+    // end_run clears them on exit; hud_start_cards replaces them after the
+    // next stage's background transition, as 443e60/4443c0 -> 407f10 does.
 }
 } // namespace stage
 

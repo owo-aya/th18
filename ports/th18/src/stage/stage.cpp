@@ -792,6 +792,7 @@ void stage_session_start(StageSession* s) {
     s->task_logic->flags|=2;static_cast<Thread*>(g_player->thread_logic)->flags|=2;
     stage::g_enemy_manager->task_logic->flags|=2;stage::g_stage->task_logic->flags|=2;
     stage::background_logic_task->flags|=2;
+    stage::hud_start_cards(); // 443e60/4443c0: player -> replay -> main -> HUD (407f10).
     s->flags&=~0x800u;s->event_timer=0;*reinterpret_cast<float*>(s->pad014)=0;
     text_loading_stop();app_finish_stage_loading();
 }
