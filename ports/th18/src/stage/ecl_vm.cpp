@@ -1466,6 +1466,12 @@ int32_t vm_exec(void* vm) {
 }  // namespace stage
 
 namespace stage {// ---------------- ECL 宿主实现（端口） ----------------
+// 45cba0: the coincident-point branch returns +pi/2 before calling atan2.
+static float enemy_player_angle(float x,float y) {
+    const float dx=g_player->x-x,dy=g_player->y-y;
+    return dx==0.0f && dy==0.0f?1.5707963705062866f:float(std::atan2(double(dy),double(dx)));
+}
+
 // 敌机变量表：437360/437c90；公共 Boss 槽与 Manager 局部变量供各关共用。
 static int32_t enemy_var_int(void* host, int32_t id) {
     Enemy& e = *static_cast<Enemy*>(host);
@@ -1505,7 +1511,10 @@ static int32_t enemy_var_int(void* host, int32_t id) {
         case -9947:return g_enemy_manager->field44;
         case -9946:return g_enemy_manager->count;
         case -9945:return g_player_character+g_player_shot_type;
-        case -9944:return int32_t(std::hypot(e.x-g_player->x,e.y-g_player->y));
+        case -9944: {
+            const float dx=e.x-g_player->x,dy=e.y-g_player->y;
+            return int32_t(std::sqrt(double(dx*dx+dy*dy)));
+        }
         case -9931:return g_enemy_manager->last_id;
         case -9914:return e.id;
         case -9911:case -9910: {
@@ -1535,7 +1544,7 @@ static float enemy_var_float(void* host,int32_t id) {
     case -10000:return float(rng_next()&0x7fffffffu);case -9999:return rng_float01();case -9998:return rng_float_pm1()*3.14159265f;
     case -9997:case -9977:return e.x;case -9996:case -9976:return e.y;
     case -9991:case -9965:return g_player->x;case -9990:case -9964:return g_player->y;
-    case -9989:return std::atan2(g_player->y-e.y,g_player->x-e.x);
+    case -9989:return enemy_player_angle(e.x,e.y);
     case -9987:return rng_float_pm1();case -9959:return float(g_difficulty);case -9954:return float(e.health);
     case -9988:return e.phase_fraction;
     case -9971:return e.absolute_motion.angle;
@@ -1549,10 +1558,13 @@ static float enemy_var_float(void* host,int32_t id) {
     case -9973:case -9993:return *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(&e)+0x12f8);
     case -9972:case -9992:return *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(&e)+0x12fc);
     case -9963:case -9962:{Enemy* boss=find_enemy(g_enemy_manager->boss_id[0]);return boss?(id==-9963?boss->x:boss->y):(id==-9963?0.0f:128.0f);}
-    case -9944:return std::hypot(e.x-g_player->x,e.y-g_player->y);
+    case -9944: {
+        const float dx=e.x-g_player->x,dy=e.y-g_player->y;
+        return float(std::sqrt(double(dx*dx+dy*dy)));
+    }
     case -9958:return std::atan2(reinterpret_cast<const Motion*>(&e.x)->vel_y,reinterpret_cast<const Motion*>(&e.x)->vel_x);
-    case -9956:return std::atan2(g_player->y-e.absolute_motion.y,g_player->x-e.absolute_motion.x);
-    case -9955:return std::atan2(g_player->y-e.relative_motion.y,g_player->x-e.relative_motion.x);
+    case -9956:return enemy_player_angle(e.absolute_motion.x,e.absolute_motion.y);
+    case -9955:return enemy_player_angle(e.relative_motion.x,e.relative_motion.y);
     case -9931:return float(uint32_t(g_enemy_manager->last_id));
     case -9914:return float(uint32_t(e.id));
     case -9911:case -9910: {
