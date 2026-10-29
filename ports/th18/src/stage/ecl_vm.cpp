@@ -1493,6 +1493,7 @@ static int32_t enemy_var_int(void* host, int32_t id) {
         case -9987: return static_cast<int32_t>(rng_float_pm1());
         case -9986: return (e.flag>>24)&1;
         case -9907: return g_status.spell_id;
+        case -9899:return app_context()->extra_ending_view;
         case -9959: return g_difficulty;
         case -9954: return e.health;
         case -9958: return int32_t(std::atan2(reinterpret_cast<const Motion*>(&e.x)->vel_y,reinterpret_cast<const Motion*>(&e.x)->vel_x));
@@ -2472,12 +2473,16 @@ void destroy_laser_manager(LaserManager* mgr) {
 }
 
 // 0x00457a60（A 队 0x00457be0 = JMP 本函数）：每帧推进两组波次计数。
-// 原版开头还有：结束状态（+0x1ec）为 1..3 时调 0x00458e40（关卡结束/符卡演出，未移植）、
-// 录像/暂停门控（DAT_004cccc8 bit6、会话 +0xb0 bit0x10000、DAT_004c5f8c、DAT_004ca21c
-// bit8、DAT_004cd624 bit4）。这些属 core/结束流程，P1 未移植，先走正常游戏路径。
+// Includes the 457a60 Extra-ending-view gate and the ordinary pause/menu path.
 ThreadStatus laser_update_task(void* ctx) {
     LaserManager* mgr = static_cast<LaserManager*>(ctx);
     if(!stage_session_started())return THREAD_CONTINUE;
+    // 457a60: Extra ending playback exits directly on Escape, without Pause.
+    if(app_context()->extra_ending_view>=0 && (input_state().pressed&ACTION_MENU_CANCEL)) {
+        app_context()->extra_ending_view=-1;
+        app_context()->next_state=4;
+        return THREAD_CONTINUE;
+    }
     if(ingame_menu_active(g_ingame_menu)) {
         const auto action=ingame_menu_update(g_ingame_menu);
         if(action==IngameMenuAction::Resume)resume_menu();
@@ -2490,7 +2495,7 @@ ThreadStatus laser_update_task(void* ctx) {
             sound_resume_se();stage::g_speed_scale=g_pause_speed;
             app_context()->next_state=action==IngameMenuAction::ReturnTitle?0x10:(replay_mode()==ReplayMode::Playback?0xb:0xa);
         }
-    } else if(stage_session_can_pause() && (input_state().pressed&ACTION_MENU_CANCEL)!=0) {
+    } else if(app_context()->extra_ending_view<0 && stage_session_can_pause() && (input_state().pressed&ACTION_MENU_CANCEL)!=0) {
         open_menu(IngameMenuReason::Pause);
     }
     if (mgr->sequence_mode != 0 && static_cast<uint32_t>(mgr->sequence_mode - 1) < 3) {

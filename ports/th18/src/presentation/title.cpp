@@ -21,6 +21,8 @@
 #include "presentation/trophy.h"
 #include "presentation/music_room.h"
 #include "presentation/practice_menu.h"
+#include "presentation/achievement_menu.h"
+#include "presentation/ending.h"
 
 struct TitleScene {
     AnmVm* signature;
@@ -46,6 +48,10 @@ struct TitleMenu {
     ReplayMenu* replay;
     MusicRoom* music_room;
     SpellPracticeMenu* spell_practice;
+    AchievementMenu* achievements;
+    AnmVm* data_heading;
+    AnmVm* data_choices;
+    int data_selection;
     AnmVm* practice_heading;
     int practice_selection;
     AnmVm* result_heading;
@@ -255,6 +261,48 @@ void enter_spell_practice(TitleMenu* menu, bool returning_from_game)
     menu->state = 18;
 }
 
+// 4686e0: Player Data is the parent selector of the achievement page.
+void enter_player_data(TitleMenu* menu)
+{
+    if(menu->ambient==nullptr)menu->ambient=create_vm(anm_get(2,"ascii.anm"),19);
+    anm_vm_free(menu->data_heading);anm_vm_free(menu->data_choices);
+    menu->data_heading=create_vm(menu->anm,0x2f);
+    menu->data_choices=create_vm(menu->anm,0x6d);
+    anm_interrupt(menu->data_choices,3);
+    anm_set_label(menu->data_choices,menu->data_selection+7);
+    menu->state=10;set_substate(menu,1);
+}
+
+void update_player_data(TitleMenu* menu)
+{
+    if(menu->substate==1) {
+        if(menu->timer>6)set_substate(menu,2);
+    } else if(menu->substate==2) {
+        const FrameInput input=input_frame();const uint32_t movement=input.pressed|input.repeat;
+        const int previous=menu->data_selection;
+        if(movement&(ACTION_UP|ACTION_LEFT))menu->data_selection=(menu->data_selection+3)%4;
+        if(movement&(ACTION_DOWN|ACTION_RIGHT))menu->data_selection=(menu->data_selection+1)%4;
+        if(previous!=menu->data_selection) {
+            sound_play_se(10);anm_interrupt(menu->data_choices,3);
+            anm_set_label(menu->data_choices,menu->data_selection+7);
+        }
+        if(input.pressed&(ACTION_BOMB|ACTION_MENU_CANCEL)) {
+            sound_play_se(9);anm_set_label(menu->data_choices,1);set_substate(menu,4);
+        } else if(menu->data_selection==3 && (input.pressed&(ACTION_SHOT|ACTION_MENU_OK))) {
+            sound_play_se(7);anm_interrupt(menu->data_choices,6);
+            set_child_label(menu->data_choices,app_context()->difficulty<4?0x34:0x35,2);
+            set_substate(menu,3);
+        }
+    } else if(menu->substate==3 && menu->timer>13) {
+        anm_set_label(menu->data_heading,1);
+        menu->achievements=achievement_menu_create(false);menu->state=23;
+    } else if(menu->substate==4 && menu->timer>5) {
+        anm_set_label(menu->data_heading,1);
+        anm_set_label(menu->ambient,1);g_finishing_ambient=menu->ambient;menu->ambient=nullptr;
+        enter_main_menu(menu);
+    }
+}
+
 // 469c80: title state 15, reached after the ending or Extra clear.
 void enter_clear_result(TitleMenu* menu)
 {
@@ -454,7 +502,7 @@ void update_main_menu(TitleMenu* menu)
                 sound_play_se(9);
             }
         }
-        if (confirm && (menu->selection <= 4 ||
+        if (confirm && (menu->selection <= 5 ||
                         menu->selection == 6 || menu->selection == 9)) {
             sound_play_se(menu->selection == 9 ? 9 : 7);
             menu->confirm_timer = 30;
@@ -481,6 +529,10 @@ void update_main_menu(TitleMenu* menu)
                 anm_interrupt(menu->title, 3);
                 menu->replay = replay_menu_create(ReplayMenuMode::Browse);
                 menu->state = 12;
+            }
+            else if(menu->selection==5) {
+                anm_interrupt(menu->title,3);menu->data_selection=0;
+                enter_player_data(menu);
             }
             else if (menu->selection == 6) {
                 anm_interrupt(menu->title, 3);
@@ -785,13 +837,30 @@ ThreadStatus title_menu_logic_step(void* ctx)
     update_vm(menu->result_player);
     update_vm(menu->result_rank);
     update_vm(menu->practice_heading);
+    update_vm(menu->data_heading);
+    update_vm(menu->data_choices);
+    // 464ed0 freezes menu input until the overlaid ending sets flags+1c bit8.
+    if(ending_active()) {
+        if(ending_finished()) {
+            ending_destroy();bgm_play(0);score_data().state[0x26]=1;
+        }
+        return THREAD_CONTINUE;
+    }
     if (menu->state == 0) {
         if (menu->scene->frames < 0xb4)
             return THREAD_CONTINUE;
         text_loading_stop();
         anm_vm_free(menu->scene->signature);
         menu->scene->signature = nullptr;
-        if (app_context()->run_cleared)
+        if(app_context()->return_to_achievements) {
+            app_context()->return_to_achievements=false;
+            menu->selection=5;menu->data_selection=2;
+            menu->title=create_vm(menu->anm,7);menu->first_entry=false;
+            anm_interrupt(menu->title,3);
+            menu->ambient=create_vm(anm_get(2,"ascii.anm"),19);
+            menu->achievements=achievement_menu_create(true);menu->state=23;
+            bgm_play(0);score_data().state[0x26]=1;menu->music_timer=-1;
+        } else if (app_context()->run_cleared)
             enter_clear_result(menu);
         else if (app_context()->prev_state == 7 && session().mode == GameMode::Practice) {
             menu->selection = 2;
@@ -835,6 +904,13 @@ ThreadStatus title_menu_logic_step(void* ctx)
         update_player_menu(menu);
     } else if (menu->state == 8) {
         update_stage_practice(menu);
+    } else if(menu->state==10) {
+        update_player_data(menu);
+    } else if(menu->state==23) {
+        if(achievement_menu_update(menu->achievements)) {
+            achievement_menu_destroy(menu->achievements);menu->achievements=nullptr;
+            enter_player_data(menu);
+        }
     } else if (menu->state == 18) {
         if (spell_practice_update(menu->spell_practice)) {
             menu->player_selection = spell_practice_player(menu->spell_practice);
@@ -869,6 +945,8 @@ ThreadStatus title_menu_logic_step(void* ctx)
 ThreadStatus title_menu_render_step(void* ctx)
 {
     TitleMenu* menu = static_cast<TitleMenu*>(ctx);
+    if(ending_active())return THREAD_CONTINUE;
+    if(menu->achievements)achievement_menu_render(menu->achievements);
     if (menu->state == 8) render_stage_practice(menu);
     if (menu->spell_practice != nullptr) spell_practice_render(menu->spell_practice);
     if (menu->cards != nullptr)
@@ -962,6 +1040,7 @@ void title_scene_destroy(TitleScene* scene)
 
 TitleMenu* title_menu_create()
 {
+    app_context()->extra_ending_view=-1; // 464b80 resets the Extra viewer global.
     TitleMenu* menu = new TitleMenu{};
     card_profile_init();
     menu->scene = static_cast<TitleScene*>(app_context()->title_obj);
@@ -983,6 +1062,7 @@ TitleMenu* title_menu_create()
 
 void title_menu_destroy(TitleMenu* menu)
 {
+    if(ending_active())ending_destroy();
     thread_remove(menu->logic_thread);
     thread_remove(menu->render_thread);
     anm_vm_free(menu->title);
@@ -996,6 +1076,8 @@ void title_menu_destroy(TitleMenu* menu)
     anm_vm_free(menu->result_player);
     anm_vm_free(menu->result_rank);
     anm_vm_free(menu->practice_heading);
+    anm_vm_free(menu->data_heading);anm_vm_free(menu->data_choices);
+    if(menu->achievements)achievement_menu_destroy(menu->achievements);
     if (menu->spell_practice != nullptr) spell_practice_destroy(menu->spell_practice);
     if (menu->replay != nullptr) replay_menu_destroy(menu->replay);
     if (menu->music_room != nullptr) music_room_destroy(menu->music_room);

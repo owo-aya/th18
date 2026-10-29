@@ -33,6 +33,9 @@ struct Ending {
     uint32_t color;
     bool first_ending;
     bool first_staff;
+    bool viewing;
+    bool finished;
+    bool retired;
     bool staff;
     bool fading;
     bool fade_out;
@@ -41,6 +44,7 @@ struct Ending {
     uint32_t fade_alpha;
 };
 Ending* g_ending;
+Ending* g_finishing_ending;
 
 void load_message(Ending* ending, const char* name) {
     std::free(ending->file);
@@ -166,6 +170,7 @@ bool execute_message(Ending* ending) {
                 3.0f / stage::g_speed_scale : 3.0f);
             break;
         case 12: {
+            if(ending->viewing)return true; // 42be70: gallery endings omit staff roll.
             for (AnmVm*& word : ending->words) {
                 anm_vm_free(word);
                 word = nullptr;
@@ -191,8 +196,10 @@ bool execute_message(Ending* ending) {
 
 ThreadStatus update(void* context) {
     auto* ending = static_cast<Ending*>(context);
+    if(ending->finished)return THREAD_CONTINUE;
     if (execute_message(ending)) {
-        app_context()->next_state = 0x10;
+        ending->finished=true;
+        if(!ending->viewing)app_context()->next_state = 0x10;
         return THREAD_CONTINUE;
     }
     ++ending->iterations;
@@ -216,6 +223,12 @@ ThreadStatus update_fade(void* context) {
     if (static_cast<int>(ending->fade_time) >= duration + (ending->fade_out ? 2 : 0))
         ending->fading = false;
     else ending->fade_time += stage::g_speed_scale;
+    if(!ending->fading && ending->retired) {
+        thread_remove(ending->fade_render);
+        g_finishing_ending=nullptr;
+        delete ending;
+        return THREAD_DONE;
+    }
     return THREAD_CONTINUE;
 }
 
@@ -246,15 +259,18 @@ ThreadStatus draw_fade(void* context) {
 }
 } // namespace
 
-void ending_create(int ending_index) {
+void ending_create(int ending_index, bool viewing) {
     auto* ending = new Ending{};
     g_ending = ending;
+    ending->viewing=viewing;
     uint8_t* state = score_data().state;
-    ending->first_ending = state[0x16 + ending_index] == 0;
-    ending->first_staff = state[0x22] == 0;
-    state[0x16 + ending_index] |= static_cast<uint8_t>(1u << static_cast<int>(session().difficulty));
-    state[0x16 + ending_index] |= 1;
-    if (ending_index < 8) state[0x22] = 1;
+    if(!viewing) {
+        ending->first_ending = state[0x16 + ending_index] == 0;
+        ending->first_staff = state[0x22] == 0;
+        state[0x16 + ending_index] |= static_cast<uint8_t>(1u << static_cast<int>(session().difficulty));
+        state[0x16 + ending_index] |= 1;
+        if (ending_index < 8) state[0x22] = 1;
+    }
     char name[16];
     std::sprintf(name, "e%02d.msg", ending_index + 1);
     load_message(ending, name);
@@ -284,13 +300,29 @@ void ending_create(int ending_index) {
 void ending_destroy() {
     Ending* ending = g_ending;
     thread_remove(ending->logic);
-    thread_remove(ending->fade_logic);
-    thread_remove(ending->fade_render);
     for (AnmVm* word : ending->words) anm_vm_free(word);
     for (AnmVm* picture : ending->pictures) anm_vm_free(picture);
     for (int slot = 0; slot < 4; ++slot)
         if (ending->resources[slot] != nullptr) anm_release_resource(20 + slot);
     std::free(ending->file);
-    delete ending;
     g_ending = nullptr;
+    // 42be70's screen effect is independently scheduled. Its final two black
+    // frames outlive the MSG controller when the achievement page resumes.
+    if(ending->fading) {
+        ending->retired=true;g_finishing_ending=ending;
+    } else {
+        thread_remove(ending->fade_logic);thread_remove(ending->fade_render);
+        delete ending;
+    }
 }
+
+void ending_finish_fade_shutdown() {
+    if(g_finishing_ending) {
+        thread_remove(g_finishing_ending->fade_logic);
+        thread_remove(g_finishing_ending->fade_render);
+        delete g_finishing_ending;g_finishing_ending=nullptr;
+    }
+}
+
+bool ending_active() {return g_ending!=nullptr;}
+bool ending_finished() {return g_ending->finished;}

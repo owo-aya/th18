@@ -48,6 +48,8 @@ struct AppContext {
     // DAT_004ccde8 and the clear-return branch of DAT_004cf438.
     int32_t ending_index = 0;
     bool run_cleared = false;
+    int32_t extra_ending_view = -1; // DAT_004c5f8c; achievement viewer writes 1.
+    bool return_to_achievements = false; // DAT_004cf438 == 6.
     // score +0x5f608 stores each starting-deck bank in 16 bytes.
     int32_t initial_card_count = 0;
     int32_t initial_cards[16] = {};

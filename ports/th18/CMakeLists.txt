@@ -28,6 +28,7 @@ set(TH18_SOURCES
     src/projectiles/laser.cpp
     src/presentation/anm.cpp
     src/presentation/title.cpp
+    src/presentation/achievement_menu.cpp
     src/presentation/music_room.cpp
     src/presentation/ending.cpp
     src/presentation/text.cpp

@@ -554,6 +554,12 @@ static void finish_stage(StageSession* s) {
         return;
     }
     st.flags |= 0x10;
+    // 444650: the achievement's Extra ending returns before clear awards.
+    if(app_context()->extra_ending_view>=0) {
+        app_context()->extra_ending_view=-1;
+        app_context()->next_state=4;
+        return;
+    }
     s->flags |= 0x4000;
     s->retry_counter = 0;
     if (playback) return;

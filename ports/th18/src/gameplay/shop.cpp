@@ -7,6 +7,7 @@
 #include "cards/card_manager.h"
 #include "cards/card_profile.h"
 #include "core/game_session.h"
+#include "core/app.h"
 #include "core/input.h"
 #include "core/rng.h"
 #include "core/thread.h"
@@ -365,7 +366,7 @@ bool shop_update(Shop* shop)
     // 00417cc0 bypasses the menu at timer 30; replay restores the saved purchase
     // state in the caller's leave-shop path (00417880), not from shopping inputs.
     if (shop->timer == 30 &&
-        (session().mode == GameMode::Replay || practice || g_status.spell_id >= 0))
+        (session().mode == GameMode::Replay || practice || app_context()->extra_ending_view >= 0))
         return true;
     // 00417cc0: a completed purchase exits immediately on pause; other states
     // wait without advancing the timer, animation, prices or shopping input.

@@ -102,6 +102,7 @@ enum EclVar : int32_t {
     kVarLastId = -9931,         // manager+0x94
     kVarId = -9914,             // enemy+0x6830
     kVarParentId = -9909,       // enemy+0x6834
+    kVarExtraEndingView = -9899, // DAT_004c5f8c
     // …其余 id 见 GetVarInt 原版 switch。
 };
 

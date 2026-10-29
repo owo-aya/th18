@@ -188,6 +188,7 @@ void app_context_shutdown() {
     if (g_app.state == 0xf) ending_destroy();
     destroy_stage_session(&g_app);
     destroy_title(&g_app);
+    ending_finish_fade_shutdown();
     destroy_transition();
     trophy_shutdown();
     g_app = AppContext{};
