@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
+#include <list>
 #include <d3d9.h>
 
 #include "core/game_session.h"
@@ -49,8 +49,14 @@ AnmVm* g_right[4];
 AnmVm* g_words[4];
 AnmVm* g_name;
 AnmVm* g_bubble;
-std::vector<AnmVm*> g_roots;
-std::vector<AnmVm*> g_effects;
+AnmVm** const g_scene_slots[] = {
+    &g_left[0], &g_left[1], &g_left[2], &g_left[3],
+    &g_right[0], &g_right[1], &g_right[2], &g_right[3],
+    &g_words[0], &g_words[1], &g_words[2], &g_words[3], &g_name, &g_bubble
+};
+IDirect3DTexture9* g_word_textures[4];
+std::list<AnmVm*> g_retiring;
+std::list<AnmVm*> g_effects;
 bool g_active;
 bool g_paused;
 bool g_skip_allowed;
@@ -103,21 +109,34 @@ void interrupt(AnmVm* vm, int id)
         anm_interrupt(vm, id);
 }
 
-AnmVm* create_vm(AnmResource* resource, int script)
+AnmVm* create_vm(AnmResource* resource, int script, AnmVm*& owner)
 {
+    if (owner) {
+        g_retiring.push_back(owner);
+        anm_manage_vm(owner, &g_retiring.back());
+    }
     AnmVm* vm = anm_vm_alloc(resource);
-    anm_vm_set_script(vm, resource, script);
+    anm_vm_bind_script(vm, resource, script);
+    vm->flags3 |= 0x1000u;
+    anm_vm_update(vm);
     anm_queue_add(vm);
-    g_roots.push_back(vm);
+    anm_manage_vm(vm, &owner);
     return vm;
 }
 
 void create_effect(AnmResource* resource, int script)
 {
-    AnmVm* vm = anm_vm_alloc(resource);
-    anm_vm_set_script(vm, resource, script);
-    anm_queue_add(vm);
-    g_effects.push_back(vm);
+    g_effects.push_back(nullptr);
+    create_vm(resource, script, g_effects.back());
+}
+
+void retire_vm(AnmVm*& vm)
+{
+    if (vm == nullptr) return;
+    label(vm, 1);
+    g_retiring.push_back(vm);
+    // The MSG handle is cleared now; ANM owns the remaining exit animation.
+    anm_manage_vm(vm, &g_retiring.back());
 }
 
 AnmResource* character_resource(int original_index)
@@ -129,27 +148,20 @@ AnmResource* character_resource(int original_index)
 
 void destroy_scene()
 {
-    for (AnmVm* word : g_words) {
-        if (word != nullptr && word->texture != nullptr)
-            static_cast<IDirect3DTexture9*>(const_cast<void*>(word->texture))->Release();
+    for (IDirect3DTexture9*& texture : g_word_textures) {
+        if (texture) texture->Release();
+        texture = nullptr;
     }
-    for (AnmVm* vm : g_roots)
-        anm_vm_free(vm);
-    g_roots.clear();
-    std::memset(g_left, 0, sizeof(g_left));
-    std::memset(g_right, 0, sizeof(g_right));
-    std::memset(g_words, 0, sizeof(g_words));
-    g_bubble = g_name = nullptr;
+    for (AnmVm** slot : g_scene_slots) anm_vm_free(*slot);
+    for (AnmVm* vm : g_retiring) anm_vm_free(vm);
+    g_retiring.clear();
     g_active = false;
 }
 
 void remove_bubble()
 {
     if (g_bubble != nullptr) {
-        auto it = std::find(g_roots.begin(), g_roots.end(), g_bubble);
-        g_roots.erase(it);
         anm_vm_free(g_bubble);
-        g_bubble = nullptr;
     }
 }
 
@@ -172,7 +184,7 @@ void decode_text(const MsgInstr* instruction, char* output)
     }
 }
 
-void position_words()
+void position_word(AnmVm* word)
 {
     if (g_bubble == nullptr)
         return;
@@ -193,17 +205,15 @@ void position_words()
         x += child->scale_x >= 1.0f ? 24.0f : (child->scale_x + 0.125f) * 32.0f - 8.0f;
     else if (g_side == 2)
         x += (child->scale_x + 0.125f) * 16.0f - 8.0f;
-    for (AnmVm* word : g_words) {
-        word->extra_x = x;
-        word->extra_y = y;
-    }
+    word->extra_x = x;
+    word->extra_y = y;
 }
 
 void show_bubble(int line)
 {
     remove_bubble();
     g_bubble_script = (g_style + line * 8) * 3 + g_side;
-    g_bubble = create_vm(g_front, g_bubble_script + 0x112);
+    create_vm(g_front, g_bubble_script + 0x112, g_bubble);
     g_bubble->extra_x = g_x;
     g_bubble->extra_y = g_y;
     // 004416d0/00441900 write the width into every direct child (float var 10004).
@@ -312,7 +322,8 @@ void msg_start(int entry)
     g_y = 640.0f;
     g_width = 320.0f;
     for (int i = 0; i < 4; ++i) {
-        g_words[i] = create_vm(g_text, i < 2 ? 0 : 1);
+        create_vm(g_text, i < 2 ? 0 : 1, g_words[i]);
+        g_words[i]->callback_index = 8; // 00441130: position after the bubble ANM tick.
         g_words[i]->flags3 |= 0x4000;
         if ((i & 1) != 0)
             anm_interrupt(g_words[i], 7);
@@ -321,6 +332,7 @@ void msg_start(int entry)
         gfx_device()->CreateTexture(1024, 40, 1, 0, D3DFMT_A4R4G4B4,
                                     D3DPOOL_MANAGED, &texture, nullptr);
         g_words[i]->texture = texture;
+        g_word_textures[i] = texture;
         g_words[i]->uv[0] = g_words[i]->uv[1] = 0.0f;
         g_words[i]->uv[2] = g_words[i]->uv[3] = 1.0f;
     }
@@ -337,6 +349,7 @@ void msg_unload()
 }
 
 bool msg_active() { return g_active; }
+void msg_position_word(AnmVm* vm) { position_word(vm); }
 bool msg_wait_released() { return !g_active || g_release != 0; }
 float msg_bgm_fade_seconds() { return g_fade_seconds; }
 
@@ -358,7 +371,8 @@ void msg_set_paused(bool paused)
         AnmVm* root = vm;
         while (root->parent != nullptr)
             root = static_cast<AnmVm*>(root->parent);
-        if (std::find(g_roots.begin(), g_roots.end(), root) != g_roots.end()) {
+        if (std::any_of(std::begin(g_scene_slots), std::end(g_scene_slots),
+                        [root](AnmVm** slot) { return *slot == root; })) {
             if (paused)
                 vm->flags2 &= ~2u;
             else
@@ -371,13 +385,17 @@ void msg_update()
 {
     if (g_paused)
         return;
-    // A stopped parent can still own animated children and receive interrupts.
-    for (AnmVm* vm : g_roots)
-        anm_vm_update(vm);
-    for (AnmVm* vm : g_effects)
-        anm_vm_update(vm);
+    g_retiring.remove(nullptr);
+    g_effects.remove(nullptr);
     if (!g_active)
         return;
+    // 0043c889: shopping waits only for the MSG interpreter. Retiring portraits
+    // and text continue their ANM scripts; holding confirm cannot arm skipping.
+    if (stage::shop_active()) {
+        g_skip_armed = false;
+        g_skip_delay = 2;
+        return;
+    }
     if (g_release > 0)
         --g_release;
     const InputState& input = input_battle_state();
@@ -408,15 +426,14 @@ void msg_update()
             const bool player = instruction->type == MSG_LEFT_CREATE && slot == 0;
             AnmResource* resource = player ? anm_manager()->resources[40 + session().player] :
                 character_resource(character.animation);
-            AnmVm* vm = create_vm(resource, player ? kPlayerPortrait[session().player] : character.portrait);
-            (instruction->type == MSG_LEFT_CREATE ? g_left : g_right)[slot] = vm;
+            create_vm(resource, player ? kPlayerPortrait[session().player] : character.portrait,
+                      (instruction->type == MSG_LEFT_CREATE ? g_left : g_right)[slot]);
             break;
         }
         case MSG_LEFT_REMOVE:
         case MSG_RIGHT_REMOVE: {
             AnmVm*& vm = (instruction->type == MSG_LEFT_REMOVE ? g_left : g_right)[integer(instruction)];
-            label(vm, 1);
-            vm = nullptr;
+            retire_vm(vm);
             if (instruction->type == MSG_RIGHT_REMOVE)
                 label(g_name, 1);
             break;
@@ -485,7 +502,7 @@ void msg_update()
             break;
         case MSG_BOSS_NAME: {
             const Character& character = kCharacters[session().stage - 1][integer(instruction)];
-            g_name = create_vm(character_resource(character.name_animation), character.name);
+            create_vm(character_resource(character.name_animation), character.name, g_name);
             break;
         }
         case MSG_STAGE_FINISH:
@@ -519,7 +536,7 @@ void msg_update()
             break;
         case MSG_SECOND_BOSS_CREATE: {
             const Character& character = kCharacters[session().stage - 1][1];
-            g_right[1] = create_vm(character_resource(character.animation), character.portrait);
+            create_vm(character_resource(character.animation), character.portrait, g_right[1]);
             break;
         }
         case MSG_SPEAKER:
@@ -543,6 +560,5 @@ void msg_update()
 done:
     if (advance_time)
         g_time += stage::g_speed_scale;
-    position_words();
 }
 

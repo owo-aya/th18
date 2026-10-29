@@ -39,6 +39,7 @@ static void draw_clear_bonus();
 namespace stage {
 static uint32_t message_events;
 static Shop* active_shop;
+static Thread* shop_task;
 bool shop_active() {return active_shop!=nullptr;}
 static Thread* background_logic_task;
 static Thread* background_upper_task;
@@ -576,6 +577,20 @@ static void finish_stage(StageSession* s) {
     replay_finish_run(true, replay_info().slow_rate);
 }
 
+// 00418c20 / 00417880: Shop runs before the pause controller and Session.
+static ThreadStatus shop_dispatch(void*) {
+    if (!shop_update(stage::active_shop)) return THREAD_CONTINUE;
+    replay_shop_result();
+    card_manager_shop_exit();
+    player_set_shop_active(false);
+    player_refresh_power_options();player_refresh_power_options();
+    stage::hud_refresh_lives();stage::hud_refresh_bombs();
+    shop_destroy(stage::active_shop);
+    stage::active_shop = nullptr;
+    stage::shop_task = nullptr;
+    return THREAD_DONE;
+}
+
 // 00443860: session A0x10, including the 120/180/380-frame clear sequence.
 ThreadStatus session_update(void* ctx) {
     auto* s = static_cast<StageSession*>(ctx);
@@ -588,15 +603,11 @@ ThreadStatus session_update(void* ctx) {
     if((stage::message_events&MSG_SHOP)!=0) {
         stage::message_events&=~MSG_SHOP;
         stage::active_shop=shop_create(session().stage);
-        player_set_shop_active(true);msg_set_paused(true);
-    }
-    if(stage::active_shop && shop_update(stage::active_shop)) {
-        replay_shop_result();card_manager_shop_exit();player_set_shop_active(false);
-        // 00417880 calls 0045d5e0 twice, including when power is unchanged.
-        player_refresh_power_options();player_refresh_power_options();
-        stage::hud_refresh_lives();stage::hud_refresh_bombs();
-        shop_destroy(stage::active_shop);stage::active_shop=nullptr;
-        msg_set_paused((s->flags&0x10u)!=0);
+        player_set_shop_active(true);
+        stage::shop_task = thread_create(shop_dispatch);
+        stage::shop_task->flags |= 2;
+        thread_set_priority(stage::shop_task, 0x0c);
+        thread_enqueue_logic(stage::shop_task);
     }
 
     if ((s->flags & 0x4000) != 0) {
@@ -807,7 +818,10 @@ void stage_session_destroy(StageSession* s) {
         if(g_stage_clear_vm){anm_vm_free(g_stage_clear_vm);g_stage_clear_vm=nullptr;}
         thread_remove(s->task_render);g_stage_session=nullptr;g_stage_started=false;delete s;return;
     }
-    if(stage::active_shop){shop_destroy(stage::active_shop);stage::active_shop=nullptr;}
+    if(stage::active_shop) {
+        thread_remove(stage::shop_task);stage::shop_task=nullptr;
+        shop_destroy(stage::active_shop);stage::active_shop=nullptr;
+    }
     msg_unload();
     score_save();
     const bool carry=g_stage_transfer && app_context()->next_state==0xc;

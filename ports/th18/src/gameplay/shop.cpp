@@ -9,12 +9,15 @@
 #include "core/game_session.h"
 #include "core/input.h"
 #include "core/rng.h"
+#include "core/thread.h"
 #include "platform/gfx.h"
 #include "player/player.h"
 #include "presentation/anm.h"
 #include "presentation/sound.h"
 #include "presentation/text.h"
+#include "replay/replay.h"
 #include "stage/session.h"
+#include "stage/stage.h"
 
 const int32_t g_card_price[14] = {
     0, 50, 80, 100, 100, 140, 180, 200, 240, 280, 300, 350, 400, 450
@@ -24,6 +27,8 @@ struct Shop {
     int stage;
     int state;
     int timer;
+    float time;
+    Thread* render_task;
     int count;
     int selected;
     int answer;
@@ -123,14 +128,18 @@ void build_goods(Shop* shop)
     shop->blank = card_manager_owned(Blank);
 }
 
-AnmVm* create_vm(AnmResource* resource, int script, float x, float y, uint32_t queue = 0)
+AnmVm* create_vm(AnmVm*& owner, AnmResource* resource, int script, float x, float y, uint32_t queue = 0)
 {
     AnmVm* vm = anm_vm_alloc(resource);
     vm->extra_x = x;
     vm->extra_y = y;
     vm->node_flags = queue;
-    anm_vm_set_script(vm, resource, script);
+    anm_vm_bind_script(vm, resource, script);
+    vm->flags3 |= 0x1000u;
+    anm_vm_update(vm);
     anm_queue_add(vm);
+    if (queue & 4u) vm->flags3 &= ~0x30000u;
+    anm_manage_vm(vm, &owner);
     return vm;
 }
 
@@ -138,6 +147,7 @@ void set_state(Shop* shop, int state)
 {
     shop->state = state;
     shop->timer = 0;
+    shop->time = 0.0f;
 }
 
 // 00458680 / 004132b0: discard the presentation, retaining goods and selection.
@@ -178,7 +188,7 @@ void describe(Shop* shop)
     for (int line = 0; line < 7; ++line) {
         const int height = line == 0 ? 80 : 40;
         if (shop->words[line] == nullptr) {
-            shop->words[line] = create_vm(shop->text, 3 + line, 448.0f,
+            create_vm(shop->words[line], shop->text, 3 + line, 448.0f,
                 line == 0 ? 482.0f : 670.0f + (line - 1) * 38.0f, 4);
             gfx_device()->CreateTexture(1024, height, 1, 0, D3DFMT_A4R4G4B4,
                 D3DPOOL_MANAGED, &shop->word_texture[line], nullptr);
@@ -194,7 +204,7 @@ void describe(Shop* shop)
             line == 0 ? card_name(id) : card_description(id, line - 1));
     }
     if (shop->category == nullptr)
-        shop->category = create_vm(shop->menu, 5, 448.0f, 332.0f, 4);
+        create_vm(shop->category, shop->menu, 5, 448.0f, 332.0f, 4);
     if (info.category != 4) {
         anm_set_sprite(shop->category, shop->menu, info.category + 5);
         anm_set_label(shop->category, 2);
@@ -207,8 +217,9 @@ void show_goods(Shop* shop)
     for (int i = 0; i < shop->count; ++i) {
         const CardInfo& info = *shop->goods[i];
         if (!card_profile_unlocked(static_cast<CardId>(info.id)))
-            shop->new_mark[i] = create_vm(shop->menu, 14, 448.0f, 312.0f);
-        shop->preview[i] = create_vm(shop->cards, 13, 448.0f, 312.0f, 6);
+            create_vm(shop->new_mark[i], shop->menu, 14, 448.0f, 312.0f);
+        create_vm(shop->preview[i], shop->cards, 13, 448.0f, 312.0f, 6);
+        anm_vm_update(shop->preview[i]); // 004091a0's extra tick before assigning the card sprite.
         anm_set_sprite(shop->preview[i], shop->cards, info.text_name);
         if (g_status.money < card_price(info.tier))
             anm_interrupt(shop->preview[i], 3);
@@ -263,6 +274,7 @@ void buy(Shop* shop)
 
 void draw_prices(Shop* shop)
 {
+    if (stage_session_flags() & 0x10u) return;
     if (shop->state != 2 && shop->state != 6 && shop->state != 7 && shop->state != 8)
         return;
     static const uint32_t colors[14] = {
@@ -289,29 +301,30 @@ void draw_prices(Shop* shop)
     text_set_alignment(1, 1);
 }
 
-void update_visuals(Shop* shop)
+ThreadStatus render(void* context)
 {
-    if (shop->heading) anm_vm_update(shop->heading);
+    draw_prices(static_cast<Shop*>(context));
+    return THREAD_CONTINUE;
+}
+
+void sync_new_marks(Shop* shop)
+{
     for (int i = 0; i < shop->count; ++i) {
-        if (shop->preview[i]) anm_vm_update(shop->preview[i]);
         if (shop->new_mark[i]) {
             AnmVm* mark = shop->new_mark[i];
             AnmVm* card = shop->preview[i];
-            anm_vm_update(mark);
             mark->extra_x = card->pos_x + card->extra_x + (card->scale_x - 1.0f) * mark->pos_x;
             mark->extra_y = card->pos_y + card->extra_y + (card->scale_x - 1.0f) * mark->pos_y;
             mark->rot_z = card->rot_z - 0.34906584f;
             mark->scale_x = card->scale_x;
             mark->scale_y = card->scale_y;
+            mark->flags2 |= 0xcu;
             if (i < shop->selected - 1 || i > shop->selected + 1) {
                 mark->extra_x = -900.0f;
                 mark->extra_y = 900.0f;
             }
         }
     }
-    for (AnmVm* vm : shop->words)
-        if (vm) anm_vm_update(vm);
-    if (shop->category) anm_vm_update(shop->category);
 }
 
 } // namespace
@@ -330,6 +343,11 @@ Shop* shop_create(int stage)
     shop->menu = anm_get(0x20, "abmenu.anm");
     shop->text = anm_get(0, "text.anm");
     build_goods(shop);
+    shop->render_task = thread_create(render);
+    shop->render_task->flags |= 2;
+    thread_set_ctx(shop->render_task, shop);
+    thread_set_priority(shop->render_task, 0x51);
+    thread_enqueue_render(shop->render_task);
     return shop;
 }
 
@@ -341,16 +359,18 @@ void shop_set_paused(Shop* shop, bool paused)
 
 bool shop_update(Shop* shop)
 {
+    const bool practice = session().mode == GameMode::Practice ||
+        session().mode == GameMode::SpellPractice ||
+        (replay_mode() == ReplayMode::Playback && (replay_info().mode_flags & 3u) != 0);
     // 00417cc0 bypasses the menu at timer 30; replay restores the saved purchase
     // state in the caller's leave-shop path (00417880), not from shopping inputs.
     if (shop->timer == 30 &&
-        (session().mode == GameMode::Replay || session().mode == GameMode::Practice))
+        (session().mode == GameMode::Replay || practice || g_status.spell_id >= 0))
         return true;
     // 00417cc0: a completed purchase exits immediately on pause; other states
     // wait without advancing the timer, animation, prices or shopping input.
     if ((stage_session_flags() & 0x10u) != 0)
         return shop->state == 4 || shop->state == 5 || shop->state == 9;
-    update_visuals(shop);
     const FrameInput input = input_frame();
     const uint32_t movement = input.pressed | input.repeat;
     const bool confirm = (input.pressed & (ACTION_SHOT | ACTION_MENU_OK)) != 0;
@@ -358,9 +378,9 @@ bool shop_update(Shop* shop)
     switch (shop->state) {
     case 0:
         set_state(shop, 1);
-        if (session().mode != GameMode::Practice) {
-            shop->heading = create_vm(shop->menu, shop->blank ? 18 : 13, 448.0f, 32.0f);
-            if (shop->blank) shop->timer = 60;
+        if (!practice && g_status.spell_id < 0) {
+            create_vm(shop->heading, shop->menu, shop->blank ? 18 : 13, 448.0f, 32.0f);
+            if (shop->blank) { shop->timer = 60; shop->time = 60.0f; }
             else anm_set_label(shop->heading, 27);
         }
         sound_play_se(15);
@@ -451,13 +471,18 @@ bool shop_update(Shop* shop)
             return true;
         break;
     }
-    draw_prices(shop);
-    ++shop->timer;
+    sync_new_marks(shop);
+    // 00417cc0 advances the integer and fractional Timer together.
+    const float speed = stage::g_speed_scale;
+    const bool unit = speed > 0.99f && speed < 1.01f;
+    shop->time += unit ? 1.0f : speed;
+    shop->timer = unit ? shop->timer + 1 : static_cast<int>(shop->time);
     return false;
 }
 
 void shop_destroy(Shop* shop)
 {
+    thread_remove(shop->render_task);
     clear_visuals(shop);
     delete shop;
 }

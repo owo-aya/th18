@@ -3,7 +3,8 @@
 
 namespace stage {
 void hud_create(int difficulty, int player);
-void hud_refresh_cards();
+void hud_refresh_cards(bool animate);
+void hud_clear_cards();
 void hud_select_card();
 void hud_spell_start();
 void hud_spell_end();

@@ -2430,7 +2430,7 @@ static void resume_menu() {
         if(g_menu_reason==IngameMenuReason::GameOver)bgm_play_at(g_game_over_track,g_game_over_position);
         else bgm_resume();
     }
-    if(msg_active())msg_set_paused(stage::shop_active());
+    if(msg_active())msg_set_paused(false);
 }
 
 // 0x004424e0 内联构造（DAT_004cf40c = 0x3f8 激光管理器）。

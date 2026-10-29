@@ -1,4 +1,5 @@
 #include "anm.h"
+#include "msg.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -765,6 +766,7 @@ void anm_draw_vm(AnmVm* vm)
         return;
     if ((vm->flags3 & 0x180) != 0)
         return;
+    if (vm->callback_index == 8) msg_position_word(vm);
     if(vm->callback_index==7){flush_sprite_batch();extra_maple_draw(vm);return;}
     AnmManager* manager = anm_manager();
     const uint32_t render_type = (vm->flags2 >> 26) & 31;

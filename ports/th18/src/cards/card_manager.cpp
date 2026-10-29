@@ -213,6 +213,7 @@ AbilityCard* card_manager_find(CardId id) {
 CardManager* card_manager() { return &g_cards; }
 
 void card_manager_clear_cards() {
+    stage::hud_clear_cards(); // 00407da0 clears both card HUDs along with the instances.
     for (int i = 0; i < g_instance_count; ++i) {
         card_options_unload(g_instances[i]);
         card_passive_unload(g_instances[i]);
@@ -230,9 +231,11 @@ void card_manager_clear_cards() {
 int32_t card_manager_acquire(CardId id, uint32_t flags) {
     if (g_instance_count > 255) return -1; // 原411460的实际持卡上限。
     if (id == Blank) card_manager_clear_cards();
-    install_instance(id, flags);
+    AbilityCard* card = install_instance(id, flags);
     if ((flags & CardAdd_NoImmediate) == 0 && card_profile_mark_acquired(id)) trophy_notify(id);
-    if (g_task) stage::hud_refresh_cards();
+    // 00411460 returns before 00408d00 for consumed items and skips it for
+    // flags == 1 (initial equipment). Buying a card preserves the active HUD.
+    if (card && flags != CardAdd_NoImmediate && g_task) stage::hud_refresh_cards(false);
     return g_instance_count;
 }
 

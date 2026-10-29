@@ -2,12 +2,14 @@
 #include <cstdint>
 
 struct AnmResource;
+struct AnmVm;
 
 // 0043e360 / 0043d720: the stage owns file_data. MSG borrows it until unload.
 void msg_load(const void* file_data, AnmResource* logo);
 void msg_start(int entry);
 void msg_unload();
 void msg_update();
+void msg_position_word(AnmVm* vm); // 00441130: text pre-draw callback, after ANM updates.
 bool msg_active();
 // ECL 519 passes on MSG 12's one-frame pulse, or after the scene ends.
 bool msg_wait_released();

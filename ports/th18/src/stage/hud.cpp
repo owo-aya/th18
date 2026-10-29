@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 #include "cards/card_manager.h"
 #include "cards/card_profile.h"
@@ -65,6 +66,12 @@ void assign_icon(AnmVm* root, int first, int second, int sprite) {
     AnmResource* resource = anm_manager()->resources[root->anm_table_index];
     if (AnmVm* vm = anm_find_child(root, first)) anm_set_sprite(vm, resource, sprite);
     if (AnmVm* vm = anm_find_child(root, second)) anm_set_sprite(vm, resource, sprite);
+}
+
+void active_card_visible(AnmVm* vm, bool visible) {
+    if (visible) vm->flags2 |= 2u; else vm->flags2 &= ~2u;
+    for (AnmVm* child = vm->child_head; child; child = child->sibling_next)
+        active_card_visible(child, visible);
 }
 
 void cooldown_visual(AnmVm* root, int front_script, int back_script, const AbilityCard* card, bool rotated) {
@@ -295,39 +302,52 @@ void hud_create(int difficulty, int player) {
         g_high_score=uint64_t(*reinterpret_cast<uint32_t*>(score_data().character[player]+0x9a8+g_status.spell_id*0xdc))*10;
     else if(session().mode==GameMode::Practice || (playback && (replay_info().mode_flags&1)))
         g_high_score=uint64_t(*reinterpret_cast<uint32_t*>(score_data().character[player]+0x12ef0+(difficulty*9+session().stage)*8))*10;
-    hud_refresh_cards();
+    // 00407f10 creates the active-card HUD once on stage entry, even with no
+    // selected card. 00408c30 only changes its visibility and icon thereafter.
+    g_active = create(anm_get(0x1f, "abcard.anm"), 0, false);
+    anm_manage_vm(g_active, &g_active);
+    hud_select_card();
+    hud_refresh_cards(true);
 }
 
-void hud_refresh_cards() {
+void hud_clear_cards() {
+    anm_vm_free(g_active);
+    g_active = nullptr;
+    for (int i = 0; i < g_card_count; ++i) anm_vm_free(g_cards[i]);
+    g_card_count = 0;
+}
+
+void hud_refresh_cards(bool animate) {
     if (g_frame == nullptr) return; // 初装/回放恢复早于本关HUD创建。
-    if (g_active) { anm_vm_free(g_active); g_active = nullptr; }
     for (int i = 0; i < g_card_count; ++i) anm_vm_free(g_cards[i]);
     AnmResource* cards = anm_get(0x1f, "abcard.anm");
-    const int selected = card_manager_selected_id();
-    if (selected >= 0) {
-        g_active_id = static_cast<CardId>(selected);
-        g_active = create(cards, 0, false);
-        assign_icon(g_active, 3, 4, card_info_by_id(selected)->text_desc);
-        anm_manage_vm(g_active,&g_active);
-    }
-    int category_count[3]{};
-    for (int i = 0; i < card_manager_equipped_count(); ++i)
-        ++category_count[card_info_by_id(card_manager_equipped_id(i))->category];
-    int category_index[3]{};
+    const CardManager* manager = card_manager();
+    const int category_count[] = {manager->count_kind8, manager->count_kind40, manager->count_other};
     g_card_count = 0;
-    for (int index = 0; index < card_manager_card_count(); ++index) {
-        AbilityCard* card=card_manager_card_at(index);
-        if(card->id==Null)continue;
-        const int i=g_card_count++;
-        g_card_objects[i]=card;
-        const CardInfo* info = card->info;
-        const int category = info->category;
-        g_cards[i] = create(cards, 5, true);
-        g_cards[i]->extra_x = static_cast<float>(category_count[category] - 1) * 40.0f -
-                              category_index[category]++ * 80.0f;
-        g_cards[i]->extra_y = static_cast<float>(category) * 130.0f;
-        assign_icon(g_cards[i], 6, 7, info->text_desc);
-        anm_manage_vm(g_cards[i],&g_cards[i]);
+    // 00408de0 groups by instance flags, not the shop's display category.
+    // MOKOU/NARUMI/PACHE are shop category 3 but belong to the third HUD row.
+    for (int category = 0; category < 3; ++category) {
+        const int intervals = category_count[category] - 1;
+        const float span = std::min(intervals * 80.0f, 304.0f);
+        const float spacing = intervals > 0 ? span / intervals : 80.0f;
+        int category_index = 0;
+        for (int index = 0; index < card_manager_card_count(); ++index) {
+            AbilityCard* card = card_manager_card_at(index);
+            const CardInfo* info = card->info;
+            const int kind = card->flags_50 & 8u ? 0 : (card->flags_50 & 0x40u ? 1 : 2);
+            if (kind != category || (category == 2 && info->unk_28 == 0)) continue;
+            const int i = g_card_count++;
+            g_card_objects[i] = card;
+            g_cards[i] = create(cards, 5, true);
+            g_cards[i]->extra_x = span * 0.5f - category_index++ * spacing;
+            g_cards[i]->extra_y = static_cast<float>(category) * 130.0f;
+            g_cards[i]->flags3 &= ~0x30000u;
+            anm_manage_vm(g_cards[i], &g_cards[i]);
+            anm_vm_update(g_cards[i]); // 00408de0's second root tick.
+            assign_icon(g_cards[i], 6, 7, info->text_desc);
+            if (card->id == Mukade) card->extra_58 = static_cast<int32_t>(g_cards[i]->handle); // 00411090
+            if (!animate) anm_set_label(g_cards[i], 4);
+        }
     }
 }
 
@@ -346,9 +366,8 @@ void hud_update() {
 
 void hud_update_cards() {
     // 408640 runs at A0x16 after card effects, before the ANM tick.
-    if (g_active) {
-        cooldown_visual(g_active, 2, 3, card_manager()->special, false);
-    }
+    if (g_active == nullptr || card_manager()->special == nullptr) return;
+    cooldown_visual(g_active, 2, 3, card_manager()->special, false);
     for (int i = 0; i < g_card_count; ++i) {
         if (g_card_objects[i]->flags_50&8)
             cooldown_visual(g_cards[i], 9, 7, g_card_objects[i], true);
@@ -364,9 +383,11 @@ void hud_spell_end() {
 }
 
 void hud_select_card() {
-    if (g_frame == nullptr) return;
+    if (g_active == nullptr) return;
     g_active_id = static_cast<CardId>(card_manager_selected_id());
-    assign_icon(g_active, 3, 4, card_info_by_id(g_active_id)->text_desc);
+    active_card_visible(g_active, static_cast<int>(g_active_id) >= 0);
+    if (static_cast<int>(g_active_id) >= 0)
+        assign_icon(g_active, 3, 4, card_info_by_id(g_active_id)->text_desc);
 }
 
 void hud_render() {
@@ -425,13 +446,7 @@ void hud_destroy() {
         anm_vm_free(g_lives[i]);
         anm_vm_free(g_bombs[i]);
     }
-    if (g_active) {
-        anm_vm_free(g_active);
-        g_active = nullptr;
-    }
-    for (int i = 0; i < g_card_count; ++i)
-        anm_vm_free(g_cards[i]);
-    g_card_count = 0;
+    hud_clear_cards();
 }
 } // namespace stage
 
