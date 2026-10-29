@@ -109,6 +109,17 @@ void stop_area(AbilityCard* card) {
     free_visuals(card);
 }
 
+void sun_invulnerability() {
+    // 4099d0(2), used by both 40fb60 activation and 40f920 upkeep.
+    if ((g_player->flags_47784 & 1) == 0) {
+        g_player->flags_47780 = 0;
+        g_player->flags_47784 |= 1;
+    }
+    g_player->anim_id = 1;
+    g_player->invuln = 2;
+    g_player->invuln_value = 2.0f;
+}
+
 void add_bomb_fragment() {
     if (g_status.unk_07c >= g_status.unk_088) { g_status.unk_080 = 0; return; }
     if (++g_status.unk_080 > 2) {
@@ -172,6 +183,7 @@ void card_active_activate(AbilityCard* card) {
             *reinterpret_cast<PlayerBullet**>(raw + 0x64) = player_damage_circle(pos, 600, 0, 120, 10);
         } else if (card->id == Sun) {
             spell_on_sun_card();
+            sun_invulnerability();
             *reinterpret_cast<PlayerBullet**>(raw + 0x68) = player_damage_circle(pos, 10, 0, 600, 80);
         }
         const int script = card->id == Kozuchi ? 30 : card->id == Kaname ? 28 : card->id == Moon ? 45 :
@@ -389,12 +401,7 @@ void card_active_update(AbilityCard* card) {
                 reset_state_time(card);
                 anm_set_label(vm, 1);
             }
-            // sub_4099d0(2)：重置真实无敌计时块，不保留较长的其它来源时限。
-            g_player->invuln = 2;
-            g_player->invuln_value = 2;
-            g_player->anim_id = 1;
-            g_player->flags_47780 = 0;
-            g_player->flags_47784 |= 1;
+            sun_invulnerability();
             const float* pos = effect_position(card);
             const float radius = vm->scale_x * 96;
             stage::cancel_enemy_bullets_circle(pos[0], pos[1], radius, 0);
